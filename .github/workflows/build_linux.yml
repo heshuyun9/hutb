@@ -1,196 +1,182 @@
-name: hubt Linux CI/CD
+name: hutb Linux CI/CD
 
 on:
-   pull_request:
-   workflow_dispatch:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: hutb-linux-ci-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PROXY: "http://127.0.0.1:38457"
+  SHIM: "/home/yxkj/ci-shims"
 
 jobs:
-    linux-dev:
-             name: Linux CI/CD
-             timeout-minutes: 1440
-             runs-on: [self-hosted, yxkj-hutb]
-            #  runs-on: [self-hosted, dev]
+  build:
+    name: Build hutb (self-hosted GPU server)
+    runs-on: [self-hosted, yxkj-hutb]
+    timeout-minutes: 600
+    defaults:
+      run:
+        shell: bash
 
-             env:
-                 UE4_ROOT: /home/yxkj/UnrealEngine_4.26
+    steps:
+      - name: 1. Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          clean: false
 
-             steps:
-                  - name: Checkout repository
-                    uses: actions/checkout@v5
-                    with:
-                         fetch-depth: 0
-                         clean: false
+      - name: 2. Show files
+        run: |
+          set -x
+          pwd
+          ls -la
+          nproc
+          df -h . | tail -1
 
-                  - name: Show files
-                    run: |
-                       pwd
-                       ls -al
+      - name: 3. Reuse local assets (dependencies / Content)
+        run: |
+          set -x
+          if [ ! -d Build/dependencies ]; then
+            mkdir -p Build
+            cp -a /home/yxkj/ci-assets/dependencies Build/dependencies
+          fi
+          if [ ! -e Unreal/CarlaUE4/Content ] || [ -z "$(ls -A Unreal/CarlaUE4/Content 2>/dev/null)" ]; then
+            rm -rf Unreal/CarlaUE4/Content
+            ln -s /home/yxkj/hutb/Unreal/CarlaUE4/Content Unreal/CarlaUE4/Content
+          fi
+          du -sh Build/dependencies 2>/dev/null || true
+          ls Unreal/CarlaUE4/Content | head -5
 
-                  - name: Reuse local assets
-                    run: |
-                       if [ ! -d Build/dependencies ]; then
-                         cp -a /home/yxkj/ci-assets/dependencies Build/dependencies
-                         echo "dependencies copied"
-                       fi
-                       if [ ! -e Unreal/CarlaUE4/Content ] || [ -z "$(ls -A Unreal/CarlaUE4/Content 2>/dev/null)" ]; then
-                         rm -rf Unreal/CarlaUE4/Content
-                         ln -s /home/yxkj/hutb/Unreal/CarlaUE4/Content Unreal/CarlaUE4/Content
-                         echo "Content linked"
-                       fi
-                    shell: bash
+      - name: 4. Ensure origin/master refs
+        run: |
+          set -x
+          for g in $(find . -maxdepth 4 -type d -name .git -prune -print | sed 's#/.git$##'); do
+            git -C "$g" fetch origin master:refs/remotes/origin/master --depth=1 2>/dev/null || true
+            git -C "$g" show-ref --verify --quiet refs/remotes/origin/master || git -C "$g" update-ref refs/remotes/origin/master HEAD
+          done
 
-                  - name: Ensure origin/master refs
-                    run: |
-                       for g in $(find . -maxdepth 4 -type d -name .git -prune -print | sed 's#/.git$##'); do
-                         echo "--- $g"
-                         git -C "$g" fetch origin master:refs/remotes/origin/master --depth=1 2>/dev/null || true
-                         git -C "$g" show-ref --verify --quiet refs/remotes/origin/master || \
-                           git -C "$g" update-ref refs/remotes/origin/master HEAD
-                         git -C "$g" show-ref | grep -E "origin/(master|hutb)" || true
-                       done
-                    shell: bash
+      - name: 5. Patch origin/master references
+        run: |
+          set -x
+          FILES=$(grep -rln "origin/master" Util Unreal --include="*.sh" --include="*.mk" --include="Makefile" 2>/dev/null || true)
+          for f in $FILES; do sed -i 's#origin/master#HEAD#g' "$f"; done
+          echo "$FILES"
 
-                  - name: Patch origin/master references
-                    run: |
-                       FILES=$(grep -rln "origin/master" Util Unreal --include="*.sh" --include="*.mk" --include="Makefile" 2>/dev/null || true)
-                       echo "=== 将被修改的文件 ==="
-                       echo "$FILES"
-                       for f in $FILES; do
-                         sed -i 's#origin/master#HEAD#g' "$f"
-                       done
-                       echo "=== 修改后仍存在 origin/master 的文件 ==="
-                       grep -rln "origin/master" Util Unreal --include="*.sh" --include="*.mk" --include="Makefile" 2>/dev/null || echo "(无)"
-                    shell: bash
+      - name: 6. Toolchain shims (<filesystem> / -stdlib / -lstdc++fs / proxy)
+        run: |
+          set -ex
+          mkdir -p "$SHIM/include" "$SHIM/bin"
 
-                  - name: Fix libc++ headers and filesystem linkage
-                    run: |
-                       mkdir -p /home/yxkj/ci-shims
-                       cat > /home/yxkj/ci-shims/filesystem <<'EOF'
-                       #pragma once
-                       #if defined(__GNUC__) && __GNUC__ < 8
-                       #include <experimental/filesystem>
-                       namespace std { namespace filesystem = experimental::filesystem; }
-                       #else
-                       #include_next <filesystem>
-                       #endif
-                       EOF
+          # 6.1 <filesystem> 兼容头：GCC7 这一代 libstdc++ 只有 <experimental/filesystem>
+          cat > "$SHIM/include/filesystem" <<'HDR'
+          #pragma once
+          #if defined(__GNUC__) && __GNUC__ < 8
+          #include <experimental/filesystem>
+          namespace std { namespace filesystem = experimental::filesystem; }
+          #else
+          #include_next <filesystem>
+          #endif
+          HDR
 
-                       echo "=== shim 内容 ==="
-                       cat /home/yxkj/ci-shims/filesystem
+          # 6.2 编译器包装：链接命令末尾自动补 -lstdc++fs（顺序正确）
+          for name in cc gcc g++ c++ clang clang++; do
+            REAL=$(command -v "$name" 2>/dev/null || true)
+            [ -z "$REAL" ] && continue
+            case "$REAL" in *ci-shims*) continue;; esac
+            if [ "$name" = "clang++" ]; then
+              printf '#!/bin/bash\nexec "%s" -stdlib=libstdc++ "$@" -lstdc++fs\n' "$REAL" > "$SHIM/bin/$name"
+            else
+              printf '#!/bin/bash\nexec "%s" "$@" -lstdc++fs\n' "$REAL" > "$SHIM/bin/$name"
+            fi
+            chmod +x "$SHIM/bin/$name"
+          done
+          ls -la "$SHIM/bin"
 
-                       echo "=== 清理旧构建目录（让 CMake 重新读取 LDFLAGS/CXXFLAGS）==="
-                       rm -rf Build/AirSim Build/libcarla Build/airlib 2>/dev/null || true
+          # 6.3 给所有 CMakeLists.txt 注入 link_libraries(stdc++fs)
+          cat > "$SHIM/patch_stdcxxfs.sh" <<'PATCH'
+          #!/bin/bash
+          # 注入 link_libraries(stdc++fs)：让 -lstdc++fs 出现在“库的位置”（目标文件之后）
+          set -u
+          ROOT="${1:-.}"
+          FILES=$(grep -rl --include=CMakeLists.txt -E 'cmake_minimum_required|project[[:space:]]*\(' "$ROOT" 2>/dev/null \
+                  | grep -vE '/(\.git|dependencies|Content)/|/build_(release|debug)/' || true)
+          n=0
+          for f in $FILES; do
+            grep -q 'stdc++fs' "$f" && continue
+            if grep -qE '^[[:space:]]*cmake_minimum_required' "$f"; then
+              sed -i '0,/^[[:space:]]*cmake_minimum_required/s//&\nlink_libraries(stdc++fs)/' "$f"
+            elif grep -qE '^[[:space:]]*project[[:space:]]*\(' "$f"; then
+              sed -i '0,/^[[:space:]]*project[[:space:]]*(/s//&\nlink_libraries(stdc++fs)/' "$f"
+            else
+              continue
+            fi
+            echo "  patched: $f"
+            n=$((n+1))
+          done
+          echo "=== link_libraries(stdc++fs) patched: $n file(s) ==="
+          PATCH
+          chmod +x "$SHIM/patch_stdcxxfs.sh"
 
-                       CXX_BIN=$(command -v c++ || command -v g++)
-                       echo "=== 默认 C++ 编译器 ==="
-                       $CXX_BIN --version | head -1
+          # 6.4 环境变量必须写 GITHUB_ENV 才能跨步骤生效
+          STD=""
+          if command -v clang++ >/dev/null 2>&1; then
+            STD="-stdlib=libstdc++"
+          fi
+          {
+            echo "CPLUS_INCLUDE_PATH=$SHIM/include"
+            echo "C_INCLUDE_PATH=$SHIM/include"
+            echo "CXXFLAGS=-I$SHIM/include $STD"
+            echo "CFLAGS=-I$SHIM/include"
+            echo "LDFLAGS=-lstdc++fs"
+            echo "http_proxy=$PROXY"
+            echo "https_proxy=$PROXY"
+            echo "no_proxy=localhost,127.0.0.1"
+          } >> "$GITHUB_ENV"
+          echo "$SHIM/bin" >> "$GITHUB_PATH"
 
-                       EXTRA=""
-                       if $CXX_BIN --version 2>/dev/null | grep -qi clang; then
-                         EXTRA="-stdlib=libstdc++"
-                         echo "检测到 clang：强制使用 libstdc++"
-                       else
-                         echo "使用 GCC，无需指定 -stdlib"
-                       fi
+          echo "=== 代理连通性测试 ==="
+          curl -sI --max-time 20 -x "$PROXY" https://github.com | head -1 || echo "代理不可用"
 
-                       echo "CPLUS_INCLUDE_PATH=/home/yxkj/ci-shims" >> $GITHUB_ENV
-                       echo "C_INCLUDE_PATH=/home/yxkj/ci-shims" >> $GITHUB_ENV
-                       echo "CXXFLAGS=-I/home/yxkj/ci-shims $EXTRA" >> $GITHUB_ENV
-                       echo "CFLAGS=-I/home/yxkj/ci-shims" >> $GITHUB_ENV
-                       echo "LDFLAGS=-lstdc++fs" >> $GITHUB_ENV
-                       echo "http_proxy=http://127.0.0.1:38457" >> $GITHUB_ENV
-                       echo "https_proxy=http://127.0.0.1:38457" >> $GITHUB_ENV
-                       echo "no_proxy=localhost,127.0.0.1" >> $GITHUB_ENV
+      - name: 7. setup (依赖 + 配置)
+        run: |
+          set -x
+          export http_proxy="$PROXY" https_proxy="$PROXY" no_proxy=localhost,127.0.0.1
+          if [ -f ./setEnv64.sh ]; then source ./setEnv64.sh; fi
+          rm -rf Build/*-source Build/*-src
+          ./setup.sh
+          make setup ARGS="--chrono"
+          bash "$SHIM/patch_stdcxxfs.sh" .
 
-                       echo "=== 确认 libstdc++fs 存在 ==="
-                       ls -l /usr/lib/gcc/x86_64-linux-gnu/*/libstdc++fs.a 2>/dev/null || echo "警告：未找到 libstdc++fs.a"
+      - name: 8. build (AirSim/AirLib + 插件)
+        run: |
+          set -x
+          export http_proxy="$PROXY" https_proxy="$PROXY" no_proxy=localhost,127.0.0.1
+          if [ -f ./setEnv64.sh ]; then source ./setEnv64.sh; fi
+          bash "$SHIM/patch_stdcxxfs.sh" .
+          make plugins
 
-                       echo "=== 代理连通性测试 ==="
-                       curl -sI --max-time 20 -x http://127.0.0.1:38457 https://github.com | head -1 || echo "代理不可用"
-                    shell: bash
+      - name: 9. retrieve content
+        run: |
+          set -x
+          export http_proxy="$PROXY" https_proxy="$PROXY" no_proxy=localhost,127.0.0.1
+          if [ -f ./setEnv64.sh ]; then source ./setEnv64.sh; fi
+          source ./Update.sh
 
-                  - name: setup
-                  
-                    run: |
-                       export http_proxy=http://127.0.0.1:38457
-                       export https_proxy=http://127.0.0.1:38457
-                       export no_proxy=localhost,127.0.0.1
-
-                       source ./setEnv64.sh
-                       git update-index --skip-worktree Unreal/CarlaUE4/CarlaUE4.uproject
-
-                       # Clean leftover source dirs from previous runs (avoid conflict with make setup)
-                       rm -rf Build/*-source Build/*-src 2>/dev/null || true
-
-                       # setup.sh 负责 clone dependencies_u、解压 UE4 插件与
-                       #  UnrealRoboticsLab 三方依赖、安装 miniconda3、apt 依赖并编译 C++ 依赖
-                       ./setup.sh
-
-                       make setup ARGS="--chrono"
-                    shell: bash
-                 
-                  - name: build 
-                    run: |
-                       export http_proxy=http://127.0.0.1:38457
-                       export https_proxy=http://127.0.0.1:38457
-                       export no_proxy=localhost,127.0.0.1
-
-                       source ./setEnv64.sh 
-                       make plugins 
-                    shell: bash  
-
-                  - name: retrieve content
-                    run: | 
-                       export http_proxy=http://127.0.0.1:38457
-                       export https_proxy=http://127.0.0.1:38457
-                       export no_proxy=localhost,127.0.0.1
-
-                       source ./setEnv64.sh 
-                       source ./Update.sh  
-                    shell: bash 
-                  
-                  - name: Fix Windows Compiler Flags and Clean Cache
-                    run: |
-                      # 💡 在脚本中直接使用 $UE4_ROOT 变量
-                       echo "=== 正在抹除 C# 脚本中的 Windows 专属忽略警告参数 (/wd4103) ==="
-                       find $UE4_ROOT/Engine/Source/Programs/UnrealBuildTool -type f -name "*.cs" -exec sed -i 's#-wd4103##g' {} +
-                       find $UE4_ROOT/Engine/Source/Programs/UnrealBuildTool -type f -name "*.cs" -exec sed -i 's#/wd4103##g' {} +
-                        
-                       find ${{ github.workspace }} -type f -name "*.cs" -exec sed -i 's#-wd4103##g' {} +
-                       find ${{ github.workspace }} -type f -name "*.cs" -exec sed -i 's#/wd4103##g' {} +
-
-                       echo "=== 正在强制重新编译虚幻引擎构建工具 (UBT) ==="
-                       rm -f $UE4_ROOT/Engine/Binaries/DotNET/UnrealBuildTool.exe
-                       cd $UE4_ROOT
-                       ./GenerateProjectFiles.sh
-
-                       echo "=== 正在物理清空被污染的 Intermediate 缓存 ==="
-                       rm -rf $UE4_ROOT/Engine/Intermediate/Build/Linux/B4D820EA
-                       rm -rf ${{ github.workspace }}/Unreal/CarlaUE4/Intermediate
-                    shell: bash
-
-                  # - name: CarlaUE4Editor
-                  #   run: |
-                  #      source ./setEnv64.sh 
-                  #      make CarlaUE4Editor ARGS="--chrono -j$(( $(nproc) / 3 ))"
-                  #   shell: bash
-
-                  # - name: package
-                  #   run: |
-                  #      source ./setEnv64.sh
-
-                  #      export MaxProcessorCount=$(( $(nproc) / 3 ))
-                  #      make package ARGS="--chrono"
-                  #   shell: bash 
-
-                  # # 运行 LibCarla 单元测试（server/client × debug/release）与 Python API 单元测试。
-                  # # 依赖 LibCarla 与 PythonAPI 两个 make 目标，首次运行会自动构建（约 30-60 分钟）。
-                  # - name: check
-                  #   run: |
-                  #      source ./setEnv64.sh
-                  #      make check.PythonAPI
-                  #      make check.smoke
-                  #      make check.vr
-                  #      make check.air
-                  #      make check.upload
-                  #   shell: bash
+      # ---- 下面三步先留着，等 7/8/9 全绿再放开 ----
+      # - name: 10. CarlaUE4Editor
+      #   run: |
+      #     source ./setEnv64.sh
+      #     make CarlaUE4Editor
+      #
+      # - name: 11. package
+      #   run: |
+      #     source ./setEnv64.sh
+      #     make package
+      #
+      # - name: 12. check
+      #   run: |
+      #     source ./setEnv64.sh
+      #     make check
