@@ -4,7 +4,6 @@ on:
    pull_request:
    workflow_dispatch:
 
-
 jobs:
     linux-dev:
              name: Linux CI/CD
@@ -20,13 +19,28 @@ jobs:
                     uses: actions/checkout@v5
                     with:
                          fetch-depth: 0
-                         
+                         clean: false
+
                   - name: Show files
                     run: |
                        pwd
                        ls -al
-                  
+
+                  - name: Reuse local assets
+                    run: |
+                       if [ ! -d Build/dependencies ]; then
+                         cp -a /home/yxkj/ci-assets/dependencies Build/dependencies
+                         echo "dependencies copied"
+                       fi
+                       if [ ! -e Unreal/CarlaUE4/Content ] || [ -z "$(ls -A Unreal/CarlaUE4/Content 2>/dev/null)" ]; then
+                         rm -rf Unreal/CarlaUE4/Content
+                         ln -s /home/yxkj/hutb/Unreal/CarlaUE4/Content Unreal/CarlaUE4/Content
+                         echo "Content linked"
+                       fi
+                    shell: bash
+
                   - name: setup
+                  
                     run: |
                        source ./setEnv64.sh
                        git update-index --skip-worktree Unreal/CarlaUE4/CarlaUE4.uproject
@@ -98,5 +112,3 @@ jobs:
                   #      make check.air
                   #      make check.upload
                   #   shell: bash
-
-
