@@ -60,8 +60,26 @@ jobs:
                        done
                        echo "=== 修改后仍存在 origin/master 的文件 ==="
                        grep -rln "origin/master" Util Unreal --include="*.sh" --include="*.mk" --include="Makefile" 2>/dev/null || echo "(无)"
-                       echo "=== BuildUE4Plugins.sh 105-125 行 ==="
-                       sed -n '105,125p' Util/BuildTools/BuildUE4Plugins.sh 2>/dev/null || true
+                    shell: bash
+
+                  - name: Provide filesystem shim for GCC 7
+                    run: |
+                       mkdir -p /home/yxkj/ci-shims
+                       cat > /home/yxkj/ci-shims/filesystem <<'EOF'
+                       #pragma once
+                       #if defined(__GNUC__) && __GNUC__ < 8
+                       #include <experimental/filesystem>
+                       namespace std { namespace filesystem = experimental::filesystem; }
+                       #else
+                       #include_next <filesystem>
+                       #endif
+                       EOF
+                       echo "=== shim 内容 ==="
+                       cat /home/yxkj/ci-shims/filesystem
+                       echo "CPLUS_INCLUDE_PATH=/home/yxkj/ci-shims" >> $GITHUB_ENV
+                       echo "C_INCLUDE_PATH=/home/yxkj/ci-shims" >> $GITHUB_ENV
+                       echo "CXXFLAGS=-I/home/yxkj/ci-shims" >> $GITHUB_ENV
+                       echo "LDFLAGS=-lstdc++fs" >> $GITHUB_ENV
                     shell: bash
 
                   - name: setup
