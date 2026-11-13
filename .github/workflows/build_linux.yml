@@ -62,7 +62,7 @@ jobs:
                        grep -rln "origin/master" Util Unreal --include="*.sh" --include="*.mk" --include="Makefile" 2>/dev/null || echo "(无)"
                     shell: bash
 
-                  - name: Provide filesystem shim for GCC 7
+                  - name: Fix libc++ headers and filesystem linkage
                     run: |
                        mkdir -p /home/yxkj/ci-shims
                        cat > /home/yxkj/ci-shims/filesystem <<'EOF'
@@ -74,12 +74,35 @@ jobs:
                        #include_next <filesystem>
                        #endif
                        EOF
+
                        echo "=== shim 内容 ==="
                        cat /home/yxkj/ci-shims/filesystem
+
+                       echo "=== 清理旧构建目录（让 CMake 重新读取 LDFLAGS/CXXFLAGS）==="
+                       rm -rf Build/AirSim Build/libcarla Build/airlib 2>/dev/null || true
+
+                       CXX_BIN=$(command -v c++ || command -v g++)
+                       echo "=== 默认 C++ 编译器 ==="
+                       $CXX_BIN --version | head -1
+
+                       EXTRA=""
+                       if $CXX_BIN --version 2>/dev/null | grep -qi clang; then
+                         EXTRA="-stdlib=libstdc++"
+                         echo "检测到 clang：强制使用 libstdc++，避开 LLVM16 的 libc++ 头文件"
+                       else
+                         echo "使用 GCC，无需指定 -stdlib"
+                       fi
+
                        echo "CPLUS_INCLUDE_PATH=/home/yxkj/ci-shims" >> $GITHUB_ENV
                        echo "C_INCLUDE_PATH=/home/yxkj/ci-shims" >> $GITHUB_ENV
-                       echo "CXXFLAGS=-I/home/yxkj/ci-shims" >> $GITHUB_ENV
+                       echo "CXXFLAGS=-I/home/yxkj/ci-shims $EXTRA" >> $GITHUB_ENV
+                       echo "CFLAGS=-I/home/yxkj/ci-shims" >> $GITHUB_ENV
                        echo "LDFLAGS=-lstdc++fs" >> $GITHUB_ENV
+
+                       echo "=== 确认 libstdc++fs 存在 ==="
+                       ls -l /usr/lib/gcc/x86_64-linux-gnu/7/libstdc++fs.a 2>/dev/null || \
+                       ls -l /usr/lib/gcc/x86_64-linux-gnu/*/libstdc++fs.a 2>/dev/null || \
+                       echo "警告：未找到 libstdc++fs.a"
                     shell: bash
 
                   - name: setup
