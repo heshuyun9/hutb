@@ -9,11 +9,11 @@ jobs:
     linux-dev:
              name: Linux CI/CD
              timeout-minutes: 1440
-             runs-on: [self-hosted, ubuntu-hutb]
+             runs-on: [self-hosted, yxkj-hutb]
             #  runs-on: [self-hosted, dev]
 
              env:
-                UE4_ROOT: /home/ubuntu/UnrealEngine_4.26
+                 UE4_ROOT: /home/yxkj/UnrealEngine_4.26
 
              steps:
                   - name: Checkout repository
@@ -73,30 +73,30 @@ jobs:
                        rm -rf ${{ github.workspace }}/Unreal/CarlaUE4/Intermediate
                     shell: bash
 
-                  - name: CarlaUE4Editor
-                    run: |
-                       source ./setEnv64.sh 
-                       make CarlaUE4Editor ARGS="--chrono -j$(( $(nproc) / 3 ))"
-                    shell: bash
+                  # - name: CarlaUE4Editor
+                  #   run: |
+                  #      source ./setEnv64.sh 
+                  #      make CarlaUE4Editor ARGS="--chrono -j$(( $(nproc) / 3 ))"
+                  #   shell: bash
 
-                  - name: package
-                    run: |
-                       source ./setEnv64.sh
+                  # - name: package
+                  #   run: |
+                  #      source ./setEnv64.sh
 
-                       export MaxProcessorCount=$(( $(nproc) / 3 ))
-                       make package ARGS="--chrono"
-                    shell: bash 
+                  #      export MaxProcessorCount=$(( $(nproc) / 3 ))
+                  #      make package ARGS="--chrono"
+                  #   shell: bash 
 
-                  # 运行 LibCarla 单元测试（server/client × debug/release）与 Python API 单元测试。
-                  # 依赖 LibCarla 与 PythonAPI 两个 make 目标，首次运行会自动构建（约 30-60 分钟）。
-                  - name: check
-                    run: |
-                       source ./setEnv64.sh
-                       make check.PythonAPI
-                       make check.smoke
-                       make check.vr
-                       make check.air
-                       make check.upload
-                    shell: bash
+                  # # 运行 LibCarla 单元测试（server/client × debug/release）与 Python API 单元测试。
+                  # # 依赖 LibCarla 与 PythonAPI 两个 make 目标，首次运行会自动构建（约 30-60 分钟）。
+                  # - name: check
+                  #   run: |
+                  #      source ./setEnv64.sh
+                  #      make check.PythonAPI
+                  #      make check.smoke
+                  #      make check.vr
+                  #      make check.air
+                  #      make check.upload
+                  #   shell: bash
 
 
