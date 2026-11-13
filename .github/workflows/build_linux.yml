@@ -46,21 +46,22 @@ jobs:
                          git -C "$g" fetch origin master:refs/remotes/origin/master --depth=1 2>/dev/null || true
                          git -C "$g" show-ref --verify --quiet refs/remotes/origin/master || \
                            git -C "$g" update-ref refs/remotes/origin/master HEAD
-                         git -C "$g" show-ref --verify --quiet refs/remotes/origin/hutb || \
-                           git -C "$g" update-ref refs/remotes/origin/hutb HEAD
                          git -C "$g" show-ref | grep -E "origin/(master|hutb)" || true
                        done
                     shell: bash
 
-                  - name: Patch downloadplugins branch
+                  - name: Patch origin/master references
                     run: |
-                       echo "=== before ==="
-                       grep -n "origin/master" Util/BuildTools/Linux.mk || true
-                       sed -i 's#origin/master#HEAD#g' Util/BuildTools/Linux.mk
-                       echo "=== after ==="
-                       grep -n "origin/master" Util/BuildTools/Linux.mk || true
-                       echo "=== 170-185 行 ==="
-                       sed -n '170,185p' Util/BuildTools/Linux.mk
+                       FILES=$(grep -rln "origin/master" Util Unreal --include="*.sh" --include="*.mk" --include="Makefile" 2>/dev/null || true)
+                       echo "=== 将被修改的文件 ==="
+                       echo "$FILES"
+                       for f in $FILES; do
+                         sed -i 's#origin/master#HEAD#g' "$f"
+                       done
+                       echo "=== 修改后仍存在 origin/master 的文件 ==="
+                       grep -rln "origin/master" Util Unreal --include="*.sh" --include="*.mk" --include="Makefile" 2>/dev/null || echo "(无)"
+                       echo "=== BuildUE4Plugins.sh 105-125 行 ==="
+                       sed -n '105,125p' Util/BuildTools/BuildUE4Plugins.sh 2>/dev/null || true
                     shell: bash
 
                   - name: setup
