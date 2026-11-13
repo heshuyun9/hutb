@@ -39,20 +39,28 @@ jobs:
                        fi
                     shell: bash
 
-                  - name: Create origin/master ref
+                  - name: Ensure origin/master refs
                     run: |
-                       for d in . Unreal/CarlaUE4/Content; do
-                         if [ -e "$d/.git" ]; then
-                           echo "--- $d"
-                           git -C "$d" fetch origin master:refs/remotes/origin/master --depth=1 2>/dev/null || true
-                           if ! git -C "$d" show-ref --verify --quiet refs/remotes/origin/master; then
-                             git -C "$d" update-ref refs/remotes/origin/master HEAD
-                             echo "  origin/master -> HEAD (fallback)"
-                           else
-                             echo "  origin/master ready"
-                           fi
-                         fi
+                       for g in $(find . -maxdepth 4 -type d -name .git -prune -print | sed 's#/.git$##'); do
+                         echo "--- $g"
+                         git -C "$g" fetch origin master:refs/remotes/origin/master --depth=1 2>/dev/null || true
+                         git -C "$g" show-ref --verify --quiet refs/remotes/origin/master || \
+                           git -C "$g" update-ref refs/remotes/origin/master HEAD
+                         git -C "$g" show-ref --verify --quiet refs/remotes/origin/hutb || \
+                           git -C "$g" update-ref refs/remotes/origin/hutb HEAD
+                         git -C "$g" show-ref | grep -E "origin/(master|hutb)" || true
                        done
+                    shell: bash
+
+                  - name: Patch downloadplugins branch
+                    run: |
+                       echo "=== before ==="
+                       grep -n "origin/master" Util/BuildTools/Linux.mk || true
+                       sed -i 's#origin/master#HEAD#g' Util/BuildTools/Linux.mk
+                       echo "=== after ==="
+                       grep -n "origin/master" Util/BuildTools/Linux.mk || true
+                       echo "=== 170-185 行 ==="
+                       sed -n '170,185p' Util/BuildTools/Linux.mk
                     shell: bash
 
                   - name: setup
