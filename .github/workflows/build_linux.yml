@@ -39,6 +39,22 @@ jobs:
                        fi
                     shell: bash
 
+                  - name: Create origin/master ref
+                    run: |
+                       for d in . Unreal/CarlaUE4/Content; do
+                         if [ -e "$d/.git" ]; then
+                           echo "--- $d"
+                           git -C "$d" fetch origin master:refs/remotes/origin/master --depth=1 2>/dev/null || true
+                           if ! git -C "$d" show-ref --verify --quiet refs/remotes/origin/master; then
+                             git -C "$d" update-ref refs/remotes/origin/master HEAD
+                             echo "  origin/master -> HEAD (fallback)"
+                           else
+                             echo "  origin/master ready"
+                           fi
+                         fi
+                       done
+                    shell: bash
+
                   - name: setup
                   
                     run: |
