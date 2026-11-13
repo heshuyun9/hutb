@@ -88,7 +88,7 @@ jobs:
                        EXTRA=""
                        if $CXX_BIN --version 2>/dev/null | grep -qi clang; then
                          EXTRA="-stdlib=libstdc++"
-                         echo "检测到 clang：强制使用 libstdc++，避开 LLVM16 的 libc++ 头文件"
+                         echo "检测到 clang：强制使用 libstdc++"
                        else
                          echo "使用 GCC，无需指定 -stdlib"
                        fi
@@ -98,16 +98,24 @@ jobs:
                        echo "CXXFLAGS=-I/home/yxkj/ci-shims $EXTRA" >> $GITHUB_ENV
                        echo "CFLAGS=-I/home/yxkj/ci-shims" >> $GITHUB_ENV
                        echo "LDFLAGS=-lstdc++fs" >> $GITHUB_ENV
+                       echo "http_proxy=http://127.0.0.1:38457" >> $GITHUB_ENV
+                       echo "https_proxy=http://127.0.0.1:38457" >> $GITHUB_ENV
+                       echo "no_proxy=localhost,127.0.0.1" >> $GITHUB_ENV
 
                        echo "=== 确认 libstdc++fs 存在 ==="
-                       ls -l /usr/lib/gcc/x86_64-linux-gnu/7/libstdc++fs.a 2>/dev/null || \
-                       ls -l /usr/lib/gcc/x86_64-linux-gnu/*/libstdc++fs.a 2>/dev/null || \
-                       echo "警告：未找到 libstdc++fs.a"
+                       ls -l /usr/lib/gcc/x86_64-linux-gnu/*/libstdc++fs.a 2>/dev/null || echo "警告：未找到 libstdc++fs.a"
+
+                       echo "=== 代理连通性测试 ==="
+                       curl -sI --max-time 20 -x http://127.0.0.1:38457 https://github.com | head -1 || echo "代理不可用"
                     shell: bash
 
                   - name: setup
                   
                     run: |
+                       export http_proxy=http://127.0.0.1:38457
+                       export https_proxy=http://127.0.0.1:38457
+                       export no_proxy=localhost,127.0.0.1
+
                        source ./setEnv64.sh
                        git update-index --skip-worktree Unreal/CarlaUE4/CarlaUE4.uproject
 
@@ -123,12 +131,20 @@ jobs:
                  
                   - name: build 
                     run: |
+                       export http_proxy=http://127.0.0.1:38457
+                       export https_proxy=http://127.0.0.1:38457
+                       export no_proxy=localhost,127.0.0.1
+
                        source ./setEnv64.sh 
                        make plugins 
                     shell: bash  
 
                   - name: retrieve content
                     run: | 
+                       export http_proxy=http://127.0.0.1:38457
+                       export https_proxy=http://127.0.0.1:38457
+                       export no_proxy=localhost,127.0.0.1
+
                        source ./setEnv64.sh 
                        source ./Update.sh  
                     shell: bash 
