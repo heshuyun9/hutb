@@ -65,10 +65,15 @@ jobs:
           for f in $FILES; do sed -i 's#origin/master#HEAD#g' "$f"; done
           echo "$FILES"
 
-      - name: 6. Toolchain shims + cmake/cmake lists patch + clean stale cache
+      - name: 6. Toolchain shims + CMake policy + clean stale cache
         run: |
           set -ex
           mkdir -p "$SHIM/include" "$SHIM/bin"
+
+          # 6.0 中和 Util/BuildTools/Setup.sh 里写死的 libc++（root cause 1 的源头）
+          sed -i 's#export CXXFLAGS="-std=c++14 -stdlib=libc++"#export CXXFLAGS="-std=c++14 -stdlib=libstdc++"#' Util/BuildTools/Setup.sh || true
+          sed -i 's#export LDFLAGS="-stdlib=libc++"#export LDFLAGS="-stdlib=libstdc++ -lstdc++fs"#' Util/BuildTools/Setup.sh || true
+          grep -n "stdlib" Util/BuildTools/Setup.sh | head -10 || true
 
           # 6.1 <filesystem> 兼容头（GCC7 只有 <experimental/filesystem>）
           cat > "$SHIM/include/filesystem" <<'HDR'
@@ -81,7 +86,7 @@ jobs:
           #endif
           HDR
 
-          # 6.2 给 CMakeLists.txt 注入 link_libraries(stdc++fs)
+          # 6.2 给 CMakeLists.txt 注入 link_libraries(stdc++fs)（库的位置，链接顺序天然正确）
           cat > "$SHIM/patch_stdcxxfs.sh" <<'PATCH'
           #!/bin/bash
           set -u
@@ -107,7 +112,7 @@ jobs:
           PATCH
           chmod +x "$SHIM/patch_stdcxxfs.sh"
 
-          # 6.3 cmake 包装器：配置前自动 patch 源码目录（时机最可靠）
+          # 6.3 cmake 包装器：任何 configure 之前先自动打补丁（解决“补丁打晚了”）
           if [ -x /usr/bin/cmake ]; then
             cat > "$SHIM/bin/cmake" <<'WRAP'
           #!/bin/bash
@@ -141,18 +146,16 @@ jobs:
           done
           ls -la "$SHIM/bin"
 
-          # 6.5 清掉会“记住旧编译器/旧链接参数”的缓存（保留源码与依赖）
+          # 6.5 清缓存（不清的话旧的 link.txt / CMakeCache 会一直生效）
           rm -rf Build/AirSim_build_release Build/AirLib Build/libcarla Build/airlib
           find Build -maxdepth 4 -name CMakeCache.txt -print -delete 2>/dev/null || true
-          find Build -maxdepth 4 -type d -name CMakeFiles -print -exec rm -rf {} + 2>/dev/null || true
+          find Build -maxdepth 4 -type d -name CMakeFiles -prune -exec rm -rf {} + 2>/dev/null || true
 
-          # 6.6 跨步骤环境变量（必须写 GITHUB_ENV）
-          STD=""
-          if command -v clang++ >/dev/null 2>&1; then STD="-stdlib=libstdc++"; fi
+          # 6.6 跨步骤环境变量
           {
             echo "CPLUS_INCLUDE_PATH=$SHIM/include"
             echo "C_INCLUDE_PATH=$SHIM/include"
-            echo "CXXFLAGS=-I$SHIM/include $STD"
+            echo "CXXFLAGS=-I$SHIM/include"
             echo "CFLAGS=-I$SHIM/include"
             echo "LDFLAGS=-lstdc++fs"
             echo "http_proxy=$PROXY"
@@ -161,27 +164,27 @@ jobs:
           } >> "$GITHUB_ENV"
           echo "$SHIM/bin" >> "$GITHUB_PATH"
 
-          # 6.7 先对现有源码打一遍，并核对 libstdc++fs 是否存在
+          # 6.7 先给现有源码打一遍 + 自检
           bash "$SHIM/patch_stdcxxfs.sh" . || true
           echo "=== libstdc++fs.a ==="
           find /usr/lib/gcc /usr/lib -name 'libstdc++fs.a' 2>/dev/null | head -3
           echo "=== 代理连通性测试 ==="
           curl -sI --max-time 20 -x "$PROXY" https://github.com | head -1 || echo "代理不可用"
 
-      - name: 7. setup (deps + configure + 在这里真正编 AirSim/AirLib)
+      - name: 7. setup (deps + 在这里真正编 AirSim/AirLib)
         run: |
           set -x
           export http_proxy="$PROXY" https_proxy="$PROXY" no_proxy=localhost,127.0.0.1
           export PATH="$SHIM/bin:$PATH"
           if [ -f ./setEnv64.sh ]; then source ./setEnv64.sh; fi
           export PATH="$SHIM/bin:$PATH"
-          which cmake c++ g++
+          which cmake c++ g++ clang++
           rm -rf Build/*-source Build/*-src
           ./setup.sh
           bash "$SHIM/patch_stdcxxfs.sh" . || true
           make setup ARGS="--chrono"
 
-      - name: 8. build (UE 插件)
+      - name: 8. build (UE4 插件)
         run: |
           set -x
           export http_proxy="$PROXY" https_proxy="$PROXY" no_proxy=localhost,127.0.0.1
@@ -198,18 +201,29 @@ jobs:
           if [ -f ./setEnv64.sh ]; then source ./setEnv64.sh; fi
           source ./Update.sh
 
-      # ---- 等 7/8/9 全绿后再放开 ----
-      # - name: 10. CarlaUE4Editor
-      #   run: |
-      #     source ./setEnv64.sh
-      #     make CarlaUE4Editor
-      #
-      # - name: 11. package
-      #   run: |
-      #     source ./setEnv64.sh
-      #     make package
-      #
-      # - name: 12. check
-      #   run: |
-      #     source ./setEnv64.sh
-      #     make check
+      - name: 10. PythonAPI (wheel)
+        run: |
+          set -x
+          export http_proxy="$PROXY" https_proxy="$PROXY" no_proxy=localhost,127.0.0.1
+          export PATH="$SHIM/bin:$PATH"
+          if [ -f ./setEnv64.sh ]; then source ./setEnv64.sh; fi
+          make PythonAPI ARGS=""
+
+      - name: 11. CarlaUE4Editor
+        run: |
+          set -x
+          export PATH="$SHIM/bin:$PATH"
+          if [ -f ./setEnv64.sh ]; then source ./setEnv64.sh; fi
+          make CarlaUE4Editor
+
+      - name: 12. package
+        run: |
+          set -x
+          if [ -f ./setEnv64.sh ]; then source ./setEnv64.sh; fi
+          make package
+
+      - name: 13. check
+        run: |
+          set -x
+          if [ -f ./setEnv64.sh ]; then source ./setEnv64.sh; fi
+          make check
