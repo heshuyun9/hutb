@@ -70,7 +70,10 @@ jobs:
           set -ex
           mkdir -p "$SHIM/include" "$SHIM/bin"
 
-          # 6.0 中和 Util/BuildTools/Setup.sh 里写死的 libc++（root cause 1 的源头）
+          # 6.0 自愈：还原之前被写坏的 CMakeLists（受 git 管理的）
+          git status --porcelain 2>/dev/null | awk '/CMakeLists\.txt$/ {print $2}' | xargs -r git checkout -- 2>/dev/null || true
+
+          # 6.0b 中和 Util/BuildTools/Setup.sh 里写死的 libc++（root cause 1 的源头）
           sed -i 's#export CXXFLAGS="-std=c++14 -stdlib=libc++"#export CXXFLAGS="-std=c++14 -stdlib=libstdc++"#' Util/BuildTools/Setup.sh || true
           sed -i 's#export LDFLAGS="-stdlib=libc++"#export LDFLAGS="-stdlib=libstdc++ -lstdc++fs"#' Util/BuildTools/Setup.sh || true
           grep -n "stdlib" Util/BuildTools/Setup.sh | head -10 || true
@@ -86,7 +89,8 @@ jobs:
           #endif
           HDR
 
-          # 6.2 给 CMakeLists.txt 注入 link_libraries(stdc++fs)（库的位置，链接顺序天然正确）
+          # 6.2 给 CMakeLists.txt 注入 link_libraries(stdc++fs)
+          # 关键：必须插在 project(...) 语句【外面】，绝不能进括号
           cat > "$SHIM/patch_stdcxxfs.sh" <<'PATCH'
           #!/bin/bash
           set -u
@@ -97,14 +101,27 @@ jobs:
           n=0
           for f in $FILES; do
             case "$f" in *ci-shims*) continue;; esac
-            grep -q 'stdc++fs' "$f" && continue
-            if grep -qE '^[[:space:]]*project[[:space:]]*\(' "$f"; then
-              sed -i '0,/^[[:space:]]*project[[:space:]]*(/s//&\nlink_libraries(stdc++fs)/' "$f"
-            elif grep -qE '^[[:space:]]*cmake_minimum_required' "$f"; then
-              sed -i '0,/^[[:space:]]*cmake_minimum_required/s//&\nlink_libraries(stdc++fs)/' "$f"
-            else
+            grep -qE '^[[:space:]]*link_libraries\(stdc\+\+fs\)[[:space:]]*$' "$f" && continue
+            cp "$f" "$f.bak"
+            awk '
+              BEGIN { inserted = 0 }
+              {
+                if (inserted == 0 && $0 ~ /^[[:space:]]*project[[:space:]]*\(/) {
+                  print "link_libraries(stdc++fs)"
+                  inserted = 1
+                }
+                print
+                if (inserted == 0 && $0 ~ /^[[:space:]]*cmake_minimum_required/) {
+                  print "link_libraries(stdc++fs)"
+                  inserted = 1
+                }
+              }
+            ' "$f.bak" > "$f"
+            if cmp -s "$f" "$f.bak"; then
+              mv "$f.bak" "$f"
               continue
             fi
+            rm -f "$f.bak"
             echo "  patched: $f"
             n=$((n+1))
           done
@@ -147,7 +164,7 @@ jobs:
           ls -la "$SHIM/bin"
 
           # 6.5 清缓存（不清的话旧的 link.txt / CMakeCache 会一直生效）
-          rm -rf Build/AirSim_build_release Build/AirLib Build/libcarla Build/airlib
+          rm -rf Build/AirSim Build/AirSim_build_release Build/AirLib Build/libcarla Build/airlib
           find Build -maxdepth 4 -name CMakeCache.txt -print -delete 2>/dev/null || true
           find Build -maxdepth 4 -type d -name CMakeFiles -prune -exec rm -rf {} + 2>/dev/null || true
 
@@ -166,6 +183,8 @@ jobs:
 
           # 6.7 先给现有源码打一遍 + 自检
           bash "$SHIM/patch_stdcxxfs.sh" . || true
+          echo "=== 坏行复查（应为空）==="
+          grep -rn 'project([^)]*stdc++fs' --include=CMakeLists.txt . 2>/dev/null | grep -v dependencies | head -5 || true
           echo "=== libstdc++fs.a ==="
           find /usr/lib/gcc /usr/lib -name 'libstdc++fs.a' 2>/dev/null | head -3
           echo "=== 代理连通性测试 ==="
