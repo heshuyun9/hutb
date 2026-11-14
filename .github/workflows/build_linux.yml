@@ -1,49 +1,92 @@
-name: hutb CI
+name: hutb Linux CI/CD
 
 on:
   pull_request:
   workflow_dispatch:
 
 concurrency:
-  group: hutb-ci-${{ github.ref }}
+  group: hutb-linux-ci-${{ github.ref }}
   cancel-in-progress: false
+
+env:
+  PROXY: "http://127.0.0.1:38457"
+  SHIM: "/home/yxkj/ci-shims"
+  CACHE_DIR: "/home/yxkj/hutb/Build"          # ← 改 1：让 BuildUE4Plugins.sh 走缓存分支
 
 jobs:
   build:
-    name: Compile check
+    name: Build hutb (self-hosted GPU server)
     runs-on: [self-hosted, yxkj-hutb]
-    timeout-minutes: 240
+    timeout-minutes: 600
     defaults:
       run:
         shell: bash
+
     steps:
-      - uses: actions/checkout@v5
+      - name: 1. Checkout repository
+        uses: actions/checkout@v5
         with:
+          fetch-depth: 0
           clean: false
 
-      - name: 复用本地资产
+      - name: 2. Show files
         run: |
-          set -e
-          [ -d Build/dependencies ] || { mkdir -p Build; cp -a ~/ci-assets/dependencies Build/dependencies; }
-          [ -s Unreal/CarlaUE4/Content ] 2>/dev/null || {
-            rm -rf Unreal/CarlaUE4/Content
-            ln -s ~/hutb/Unreal/CarlaUE4/Content Unreal/CarlaUE4/Content
-          }
+          set -x
+          pwd
+          ls -la
+          nproc
           df -h . | tail -1
 
-      - name: 环境
+      - name: 3. Reuse local assets (dependencies / Content)
         run: |
-          set -e
-          echo "UE4_ROOT=$HOME/UnrealEngine_4.26" >> $GITHUB_ENV
-          echo "DISPLAY=:1" >> $GITHUB_ENV
-          echo "LD_LIBRARY_PATH=$PWD/Unreal/CarlaUE4/Plugins/UnrealRoboticsLab/Binaries/Linux:$LD_LIBRARY_PATH" >> $GITHUB_ENV
+          set -x
+          if [ ! -d Build/dependencies ]; then
+            mkdir -p Build
+            cp -a /home/yxkj/ci-assets/dependencies Build/dependencies
+          fi
+          if [ ! -e Unreal/CarlaUE4/Content ] || [ -z "$(ls -A Unreal/CarlaUE4/Content 2>/dev/null)" ]; then
+            rm -rf Unreal/CarlaUE4/Content
+            ln -s /home/yxkj/hutb/Unreal/CarlaUE4/Content Unreal/CarlaUE4/Content
+          fi
 
-      - name: 编译（唯一目标：过不过）
-        run: |
-          set -e
-          make CarlaUE4Editor 2>&1 | tail -60
+          # ← 改 2：不再预放 Build/AirSim（旧的"半成品拷贝"是第 7 步 128 错误的根因）
+          #         改为校验 CACHE_DIR 缓存完整，并把残留的不完整目录清掉
+          if [ -d Build/AirSim ] && [ ! -d Build/AirSim/Unreal/Plugins/AirSim ]; then
+            echo "Removing incomplete Build/AirSim"
+            rm -rf Build/AirSim
+          fi
+          if [ -d "$CACHE_DIR/AirSim/Unreal/Plugins/AirSim" ]; then
+            echo "AirSim cache OK: $CACHE_DIR/AirSim"
+          else
+            echo "::error::AirSim cache missing: $CACHE_DIR/AirSim/Unreal/Plugins/AirSim"
+            ls -la "$CACHE_DIR" || true
+            exit 1
+          fi
 
-      - name: 结果
-        if: always()
+          du -sh Build/dependencies 2>/dev/null || true
+          ls Unreal/CarlaUE4/Content | head -5
+
+      - name: 4. Ensure origin/master refs
         run: |
-          ls -lh Unreal/CarlaUE4/Binaries/Linux/ | head -20
+          set -x
+          for g in $(find . -maxdepth 4 -type d -name .git -prune -print | sed 's#/.git$##'); do
+            git -C "$g" fetch origin master:refs/remotes/origin/master --depth=1 2>/dev/null || true
+            git -C "$g" show-ref --verify --quiet refs/remotes/origin/master || git -C "$g" update-ref refs/remotes/origin/master HEAD
+          done
+
+      - name: 5. Patch origin/master references
+        run: |
+          set -x
+          FILES=$(grep -rln "origin/master" Util Unreal --include="*.sh" --include="*.mk" --include="Makefile" 2>/dev/null || true)
+          for f in $FILES; do sed -i 's#origin/master#HEAD#g' "$f"; done
+          echo "$FILES"
+
+      - name: 6. Toolchain shims + CMake policy + clean stale cache
+        run: |
+          set -ex
+          mkdir -p "$SHIM/include" "$SHIM/bin"
+
+          # 6.0 自愈：还原之前被写坏的 CMakeLists（受 git 管理的）
+          git status --porcelain 2>/dev/null | awk '/CMakeLists\.txt$/ {print $2}' | xargs -r git checkout -- 2>/dev/null || true
+
+          # 6.0b 中和 Setup.sh
