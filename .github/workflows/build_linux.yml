@@ -89,4 +89,190 @@ jobs:
           # 6.0 自愈：还原之前被写坏的 CMakeLists（受 git 管理的）
           git status --porcelain 2>/dev/null | awk '/CMakeLists\.txt$/ {print $2}' | xargs -r git checkout -- 2>/dev/null || true
 
-          # 6.0b 中和 Setup.sh
+          # 6.0b 中和 Setup.sh 里写死的 libc++（root cause 1 的源头）
+          sed -i 's#export CXXFLAGS="-std=c++14 -stdlib=libc++"#export CXXFLAGS="-std=c++14 -stdlib=libstdc++"#' Util/BuildTools/Setup.sh || true
+          sed -i 's#export LDFLAGS="-stdlib=libc++"#export LDFLAGS="-stdlib=libstdc++ -lstdc++fs"#' Util/BuildTools/Setup.sh || true
+
+          # 6.0c 让 AirSim 的 setup.sh 走代理（原文主动屏蔽了代理，导致 rpclib 卡死）
+          sed -i 's#env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY ./setup.sh#./setup.sh#' Util/BuildTools/BuildUE4Plugins.sh || true
+          grep -n "setup.sh" Util/BuildTools/BuildUE4Plugins.sh | head -5 || true
+
+          # 6.1 <filesystem> 兼容头
+          cat > "$SHIM/include/filesystem" <<'HDR'
+          #pragma once
+          #if defined(__GNUC__) && __GNUC__ < 8
+          #include <experimental/filesystem>
+          namespace std { namespace filesystem = experimental::filesystem; }
+          #else
+          #include_next <filesystem>
+          #endif
+          HDR
+
+          # 6.2 给 CMakeLists.txt 注入 link_libraries(stdc++fs)（插在 project() 之外）
+          cat > "$SHIM/patch_stdcxxfs.sh" <<'PATCH'
+          #!/bin/bash
+          set -u
+          ROOT="${1:-.}"
+          [ -d "$ROOT" ] || exit 0
+          FILES=$(grep -rl --include=CMakeLists.txt -E 'cmake_minimum_required|project[[:space:]]*\(' "$ROOT" 2>/dev/null \
+                  | grep -vE '/(\.git|dependencies|Content)/|/build_(release|debug)/' || true)
+          n=0
+          for f in $FILES; do
+            case "$f" in *ci-shims*) continue;; esac
+            grep -qE '^[[:space:]]*link_libraries\(stdc\+\+fs\)[[:space:]]*$' "$f" && continue
+            cp "$f" "$f.bak"
+            awk '
+              BEGIN { inserted = 0 }
+              {
+                if (inserted == 0 && $0 ~ /^[[:space:]]*project[[:space:]]*\(/) {
+                  print "link_libraries(stdc++fs)"
+                  inserted = 1
+                }
+                print
+                if (inserted == 0 && $0 ~ /^[[:space:]]*cmake_minimum_required/) {
+                  print "link_libraries(stdc++fs)"
+                  inserted = 1
+                }
+              }
+            ' "$f.bak" > "$f"
+            if cmp -s "$f" "$f.bak"; then
+              mv "$f.bak" "$f"
+              continue
+            fi
+            rm -f "$f.bak"
+            echo "  patched: $f"
+            n=$((n+1))
+          done
+          echo "=== link_libraries(stdc++fs) patched: $n file(s) under $ROOT ==="
+          PATCH
+          chmod +x "$SHIM/patch_stdcxxfs.sh"
+
+          # 6.3 cmake 包装器：configure 前自动打补丁
+          if [ -x /usr/bin/cmake ]; then
+            cat > "$SHIM/bin/cmake" <<'WRAP'
+          #!/bin/bash
+          SHIM="/home/yxkj/ci-shims"
+          SRC=""
+          for a in "$@"; do
+            case "$a" in
+              -*) ;;
+              *) if [ -d "$a" ]; then SRC="$a"; break; fi ;;
+            esac
+          done
+          if [ -n "$SRC" ] && [ -x "$SHIM/patch_stdcxxfs.sh" ]; then
+            "$SHIM/patch_stdcxxfs.sh" "$SRC" || true
+          fi
+          exec /usr/bin/cmake "$@"
+          WRAP
+            chmod +x "$SHIM/bin/cmake"
+          fi
+
+          # 6.4 编译器包装（兜底）
+          for name in cc gcc g++ c++ clang clang++; do
+            REAL=$(command -v "$name" 2>/dev/null || true)
+            if [ -z "$REAL" ]; then continue; fi
+            case "$REAL" in *ci-shims*) continue;; esac
+            if [ "$name" = "clang++" ]; then
+              printf '#!/bin/bash\nexec "%s" -stdlib=libstdc++ "$@" -lstdc++fs\n' "$REAL" > "$SHIM/bin/$name"
+            else
+              printf '#!/bin/bash\nexec "%s" "$@" -lstdc++fs\n' "$REAL" > "$SHIM/bin/$name"
+            fi
+            chmod +x "$SHIM/bin/$name"
+          done
+          ls -la "$SHIM/bin"
+
+          # 6.5 只清构建产物和缓存，保留 Build/AirSim 源码
+          rm -rf Build/AirSim_build_release Build/AirLib Build/libcarla Build/airlib
+          find Build -maxdepth 4 -name CMakeCache.txt -print -delete 2>/dev/null || true
+          find Build -maxdepth 4 -type d -name CMakeFiles -prune -exec rm -rf {} + 2>/dev/null || true
+
+          # 6.6 跨步骤环境变量
+          {
+            echo "CPLUS_INCLUDE_PATH=$SHIM/include"
+            echo "C_INCLUDE_PATH=$SHIM/include"
+            echo "CXXFLAGS=-I$SHIM/include"
+            echo "CFLAGS=-I$SHIM/include"
+            echo "LDFLAGS=-lstdc++fs"
+            echo "http_proxy=$PROXY"
+            echo "https_proxy=$PROXY"
+            echo "no_proxy=localhost,127.0.0.1"
+            echo "CACHE_DIR=$CACHE_DIR"
+          } >> "$GITHUB_ENV"
+          echo "$SHIM/bin" >> "$GITHUB_PATH"
+
+          # 6.7 打一遍 + 自检
+          bash "$SHIM/patch_stdcxxfs.sh" . || true
+          echo "=== 坏行复查（应为空）==="
+          grep -rn 'project([^)]*stdc++fs' --include=CMakeLists.txt . 2>/dev/null | grep -v dependencies | head -5 || true
+          echo "=== libstdc++fs.a ==="
+          find /usr/lib/gcc /usr/lib -name 'libstdc++fs.a' 2>/dev/null | head -3
+          echo "=== 代理连通性测试 ==="
+          curl -sI --max-time 20 -x "$PROXY" https://github.com | head -1 || echo "代理不可用"
+
+      - name: 7. setup (deps + 在这里真正编 AirSim/AirLib)
+        run: |
+          set -x
+          export http_proxy="$PROXY" https_proxy="$PROXY" no_proxy=localhost,127.0.0.1
+          export PATH="$SHIM/bin:$PATH"
+          export CACHE_DIR="/home/yxkj/hutb/Build"          # ← 改 3：显式导出，防被脚本清空
+          if [ -f ./setEnv64.sh ]; then source ./setEnv64.sh; fi
+          export PATH="$SHIM/bin:$PATH"
+          export CACHE_DIR="/home/yxkj/hutb/Build"
+          which cmake c++ g++ clang++
+          echo "=== CACHE_DIR=$CACHE_DIR ==="
+          ls -d "$CACHE_DIR/AirSim" || true
+          rm -rf Build/*-source Build/*-src
+          ./setup.sh
+          bash "$SHIM/patch_stdcxxfs.sh" . || true
+          make setup ARGS="--chrono"
+          echo "=== AirSim 源码就位检查 ==="
+          ls -d Build/AirSim/Unreal/Plugins/AirSim
+          ls Build/AirSim_build_release/output/lib 2>/dev/null | head -5 || true
+
+      - name: 8. build (UE4 插件)
+        run: |
+          set -x
+          export http_proxy="$PROXY" https_proxy="$PROXY" no_proxy=localhost,127.0.0.1
+          export PATH="$SHIM/bin:$PATH"
+          export CACHE_DIR="/home/yxkj/hutb/Build"
+          if [ -f ./setEnv64.sh ]; then source ./setEnv64.sh; fi
+          export PATH="$SHIM/bin:$PATH"
+          bash "$SHIM/patch_stdcxxfs.sh" . || true
+          make plugins
+
+      - name: 9. retrieve content
+        run: |
+          set -x
+          export http_proxy="$PROXY" https_proxy="$PROXY" no_proxy=localhost,127.0.0.1
+          if [ -f ./setEnv64.sh ]; then source ./setEnv64.sh; fi
+          source ./Update.sh
+
+      - name: 10. PythonAPI (wheel)
+        run: |
+          set -x
+          export http_proxy="$PROXY" https_proxy="$PROXY" no_proxy=localhost,127.0.0.1
+          export PATH="$SHIM/bin:$PATH"
+          if [ -f ./setEnv64.sh ]; then source ./setEnv64.sh; fi
+          make PythonAPI ARGS=""
+
+      - name: 11. CarlaUE4Editor
+        run: |
+          set -x
+          export PATH="$SHIM/bin:$PATH"
+          if [ -f ./setEnv64.sh ]; then source ./setEnv64.sh; fi
+          make CarlaUE4Editor
+
+      - name: 12. package (可选，失败不阻塞)
+        continue-on-error: true                            # ← 改 4
+        run: |
+          set -x
+          if [ -f ./setEnv64.sh ]; then source ./setEnv64.sh; fi
+          # Makefile 里没有 package 目标，直接调脚本
+          ./Util/BuildTools/Package.sh --config=Development --no-zip
+
+      - name: 13. check (可选，失败不阻塞)
+        continue-on-error: true                            # ← 改 5
+        run: |
+          set -x
+          if [ -f ./setEnv64.sh ]; then source ./setEnv64.sh; fi
+          make check
