@@ -167,23 +167,32 @@ jobs:
                   print('警告：未找到 ./build.sh 锚点')
           PY
 
-          # 3.5 Setup.sh：LLVM_INCLUDE 改指 UE4 自带 LibCxx
-          # （否则 clang10 读到系统 libc++18 头，报 cstdint/__verbose_abort 语法错误）
+          # 3.5 Setup.sh：LLVM_INCLUDE / LLVM_LIBPATH 改指 UE4 自带 LibCxx
+          # （否则 clang10 读系统 libc++18 头报错；-Wl,-L 为空还会把 .o 当成目录吞掉）
           python3 - Util/BuildTools/Setup.sh <<'PY'
           import io, sys
           p = sys.argv[1]
           s = io.open(p, encoding='utf-8').read()
-          if '[hutb-ci] LLVM_INCLUDE' in s:
-              print('LLVM_INCLUDE 已指向 UE4 LibCxx，跳过')
-          elif 'unset LLVM_INCLUDE' in s:
-              new = ('# [hutb-ci] LLVM_INCLUDE -> UE4 LibCxx\n'
-                     'export LLVM_INCLUDE="${UE4_ROOT}/Engine/Source/ThirdParty/Linux/LibCxx/include/c++/v1"\n'
-                     'export LLVM_LIBPATH="${UE4_ROOT}/Engine/Source/ThirdParty/Linux/LibCxx/lib/Linux/x86_64-unknown-linux-gnu"\n')
-              io.open(p, 'w', encoding='utf-8').write(
-                  s.replace('unset LLVM_INCLUDE', new, 1))
-              print('Setup.sh 的 LLVM_INCLUDE 已改指 UE4 LibCxx')
+          changed = False
+          if 'unset LLVM_INCLUDE' in s:
+              s = s.replace(
+                  'unset LLVM_INCLUDE',
+                  '# [hutb-ci] LLVM_INCLUDE -> UE4 LibCxx\n'
+                  'export LLVM_INCLUDE="${UE4_ROOT}/Engine/Source/ThirdParty/Linux/LibCxx/include/c++/v1"',
+                  1)
+              changed = True
+          if 'unset LLVM_LIBPATH' in s:
+              s = s.replace(
+                  'unset LLVM_LIBPATH',
+                  '# [hutb-ci] LLVM_LIBPATH -> UE4 LibCxx\n'
+                  'export LLVM_LIBPATH="${UE4_ROOT}/Engine/Source/ThirdParty/Linux/LibCxx/lib/Linux/x86_64-unknown-linux-gnu"',
+                  1)
+              changed = True
+          if changed:
+              io.open(p, 'w', encoding='utf-8').write(s)
+              print('Setup.sh 的 LLVM_INCLUDE/LLVM_LIBPATH 已改指 UE4 LibCxx')
           else:
-              print('警告：未找到 unset LLVM_INCLUDE')
+              print('LLVM_* 已指向 UE4 LibCxx，跳过')
           PY
 
           echo "shim 就绪"
