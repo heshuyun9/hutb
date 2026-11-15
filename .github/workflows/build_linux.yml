@@ -21,7 +21,12 @@ jobs:
 
     env:
       UE4_ROOT: /home/yxkj/UnrealEngine_4.26
-      # pip 必须直连镜像；FastGithub 只转发 GitHub，走代理会 404/403
+      # GitHub 走本地 FastGithub 代理（大仓库直连会 curl 28 超时）
+      http_proxy: http://127.0.0.1:38457
+      https_proxy: http://127.0.0.1:38457
+      # 但 pip / pypi 必须直连：FastGithub 只转发 GitHub，走代理会 404/403
+      no_proxy: localhost,127.0.0.1,pypi.org,files.pythonhosted.org,mirrors.aliyun.com
+      NO_PROXY: localhost,127.0.0.1,pypi.org,files.pythonhosted.org,mirrors.aliyun.com
       PIP_INDEX_URL: https://mirrors.aliyun.com/pypi/simple
       PIP_TRUSTED_HOST: mirrors.aliyun.com
       PIP_DEFAULT_TIMEOUT: "120"
