@@ -236,6 +236,10 @@ jobs:
       - name: 7. 编译 CarlaUE4Editor
         run: |
           set -o pipefail
+          # osm2odr 需要 zlib 头；用了 UE4 sysroot 后系统 /usr/include 不可见，单独拷一份用 CPATH 注入
+          mkdir -p Build/zlib-include
+          cp -f /usr/include/zlib.h /usr/include/zconf.h Build/zlib-include/ 2>/dev/null || true
+          export CPATH="$PWD/Build/zlib-include${CPATH:+:$CPATH}"
           # 清掉旧配置（CMAKE_CXX_FLAGS 会随 setup 重跑不断叠加，导致参数重复十几份）
           rm -rf Build/LibCarla Build/LibCppToolChain.cmake
           make CarlaUE4Editor 2>&1 | tee /tmp/ci_editor.log
