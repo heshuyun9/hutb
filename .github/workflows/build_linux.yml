@@ -202,6 +202,8 @@ jobs:
           # 3.6 LibCarla 单测关掉：预编译的 gtest 依赖新版 glibc（__isoc23_strtol），
           # 与 UE4 sysroot(CentOS7 glibc 2.17) 链接必然失败；CI 不需要跑单测
           sed -i 's/-DLIBCARLA_BUILD_TEST=ON/-DLIBCARLA_BUILD_TEST=OFF/' Util/BuildTools/BuildLibCarla.sh || true
+          # 双保险：直接让 LibCarla 的 CMake 永不加入 test 子目录
+          sed -i 's/^if ((LIBCARLA_BUILD_TEST)/if (FALSE AND (LIBCARLA_BUILD_TEST)/' LibCarla/cmake/CMakeLists.txt || true
 
           echo "shim 就绪"
 
