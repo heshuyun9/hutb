@@ -195,28 +195,6 @@ jobs:
       # （仓库里的 Plugins.sh 有 bug：未 source Environment.sh，log 未定义，直接跑必失败）
 
       # ------------------------------------------------------------------
-      # 4.5 修正自动生成的 CMake 工具链：libc++ 必须配合 UE4 的 sysroot，
-      # 否则 UE4 LibCxx 头找不到 glibc 的 labs/int8_t（libc++ 与系统 glibc 头版本不匹配）
-      - name: 4.5 修正 LibCppToolChain.cmake（libc++ + UE4 sysroot）
-        run: |
-          set -e
-          TC=Build/LibCppToolChain.cmake
-          INC="$UE4_ROOT/Engine/Source/ThirdParty/Linux/LibCxx/include/c++/v1"
-          LIB="$UE4_ROOT/Engine/Source/ThirdParty/Linux/LibCxx/lib/Linux/x86_64-unknown-linux-gnu"
-          SDK="$UE4_ROOT/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/v17_clang-10.0.1-centos7/x86_64-unknown-linux-gnu"
-          python3 - "$TC" "$INC" "$LIB" "$SDK" <<'PY'
-          import io, sys
-          tc, inc, lib, sdk = sys.argv[1:5]
-          s = io.open(tc, encoding='utf-8').read()
-          s = s.replace('-isystem  ', '-isystem %s --sysroot=%s' % (inc, sdk))
-          s = s.replace('-L "', '-L%s "' % lib)
-          io.open(tc, 'w', encoding='utf-8').write(s)
-          print('LibCppToolChain.cmake patched')
-          PY
-          grep -n isystem "$TC" || true
-          rm -rf Build/LibCarla
-
-      # ------------------------------------------------------------------
       - name: 6. 同步资源 Update.sh
         run: |
           set -o pipefail
@@ -228,6 +206,14 @@ jobs:
       - name: 7. 编译 CarlaUE4Editor
         run: |
           set -o pipefail
+          INC="$UE4_ROOT/Engine/Source/ThirdParty/Linux/LibCxx/include/c++/v1"
+          LIB="$UE4_ROOT/Engine/Source/ThirdParty/Linux/LibCxx/lib/Linux/x86_64-unknown-linux-gnu"
+          SDK="$UE4_ROOT/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/v17_clang-10.0.1-centos7/x86_64-unknown-linux-gnu"
+          # 清掉旧配置（CMAKE_CXX_FLAGS 会随 setup 重跑不断叠加，导致参数重复十几份）
+          rm -rf Build/LibCarla Build/LibCppToolChain.cmake
+          CXXFLAGS="-std=c++14 -stdlib=libc++ -isystem $INC --sysroot=$SDK" \
+          CFLAGS="--sysroot=$SDK" \
+          LDFLAGS="-stdlib=libc++ -L$LIB --sysroot=$SDK" \
           make CarlaUE4Editor 2>&1 | tee /tmp/ci_editor.log
 
       # ------------------------------------------------------------------
