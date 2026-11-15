@@ -148,10 +148,24 @@ jobs:
               io.open(p, 'w', encoding='utf-8').write('\n'.join(out))
               print('Content 保护插入成功' if patched else '警告：未找到 Content 分支，未打补丁')
           PY
-          # AirSim 每次 reset 后重新禁用 MavLinkTest（否则 cannot find -lc++）
-          if ! grep -q '\[hutb-ci\] add_subdirectory("MavLinkTest")' "$P_SH"; then
-            sed -i 's|^\(\s*\)add_subdirectory("MavLinkTest")|\1# [hutb-ci] add_subdirectory("MavLinkTest") 已禁用|' "$P_SH" || true
-          fi
+          # 3.4 AirSim：reset 之后、build.sh 之前禁用 MavLinkTest
+          # （g++7.5 没有 <filesystem>，MavLinkTest 会 fatal error）
+          python3 - "$P_SH" <<'PY'
+          import io, sys
+          p = sys.argv[1]
+          s = io.open(p, encoding='utf-8').read()
+          if '[hutb-ci] MavLinkTest' in s:
+              print('MavLinkTest 禁用已存在，跳过')
+          else:
+              inject = ('sed -i \'s|^add_subdirectory("MavLinkTest")|# [hutb-ci] MavLinkTest 已禁用|\' '
+                        '"$AIR_BUILD_PATH/cmake/MavLinkCom/CMakeLists.txt" || true\n    ./build.sh')
+              if './build.sh' in s:
+                  s = s.replace('./build.sh', inject, 1)
+                  io.open(p, 'w', encoding='utf-8').write(s)
+                  print('MavLinkTest 禁用已注入')
+              else:
+                  print('警告：未找到 ./build.sh 锚点')
+          PY
 
           echo "shim 就绪"
 
