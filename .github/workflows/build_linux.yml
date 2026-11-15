@@ -68,9 +68,15 @@ jobs:
           set -e
           mkdir -p Build
           # 依赖缓存：优先复用服务器上已装好的 dependencies
-          if [ -d /home/yxkj/ci-assets/dependencies ] && [ ! -e Build/dependencies ]; then
-            ln -sfn /home/yxkj/ci-assets/dependencies Build/dependencies
-            echo "复用 /home/yxkj/ci-assets/dependencies"
+          # 依赖缓存：统一指向 ~/hutb/Build/dependencies（miniconda 等已按 yxkj 用户路径装好；
+          # 工作区里若残留别人建的 dependencies，其 miniconda 路径是 /home/ubuntu，必然 Permission denied）
+          if [ -L Build/dependencies ] || [ ! -e Build/dependencies ]; then
+            ln -sfn /home/yxkj/hutb/Build/dependencies Build/dependencies
+            echo "依赖软链 -> /home/yxkj/hutb/Build/dependencies"
+          else
+            mv Build/dependencies "Build/dependencies.bak_$(date +%s)" 2>/dev/null || true
+            ln -sfn /home/yxkj/hutb/Build/dependencies Build/dependencies
+            echo "替换掉旧 dependencies 目录为软链"
           fi
           # Content（地图资源仓库）软链
           if [ -d /home/yxkj/ci-assets/Content ] && [ ! -e Unreal/CarlaUE4/Content ]; then
