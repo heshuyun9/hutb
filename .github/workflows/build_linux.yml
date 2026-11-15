@@ -205,6 +205,12 @@ jobs:
           # 双保险：直接让 LibCarla 的 CMake 永不加入 test 子目录
           sed -i 's/^if ((LIBCARLA_BUILD_TEST)/if (FALSE AND (LIBCARLA_BUILD_TEST)/' LibCarla/cmake/CMakeLists.txt || true
 
+          # 3.7 用本机已调通的 BuildOSM2ODR.sh（UE4 clang + UE4 LibCxx + sysroot）
+          if [ -f /home/yxkj/hutb/Util/BuildTools/BuildOSM2ODR.sh ]; then
+            cp /home/yxkj/hutb/Util/BuildTools/BuildOSM2ODR.sh Util/BuildTools/BuildOSM2ODR.sh
+            echo "已复用本机验证过的 BuildOSM2ODR.sh"
+          fi
+
           echo "shim 就绪"
 
       # ------------------------------------------------------------------
