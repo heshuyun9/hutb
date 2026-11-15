@@ -208,10 +208,9 @@ jobs:
           make setup 2>&1 | tee /tmp/ci_setup.log
 
       # ------------------------------------------------------------------
-      - name: 5. UE4 插件（AirSim/StreetMap 等）
-        run: |
-          set -o pipefail
-          make plugins 2>&1 | tee /tmp/ci_plugins.log
+      # 5. UE4 插件（AirSim/StreetMap 等）
+      # 说明：make setup 已依赖 downloadplugins 并完成插件构建，这里不再重复执行
+      # （仓库里的 Plugins.sh 有 bug：未 source Environment.sh，log 未定义，直接跑必失败）
 
       # ------------------------------------------------------------------
       - name: 6. 同步资源 Update.sh
