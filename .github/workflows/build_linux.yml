@@ -177,9 +177,27 @@ jobs:
                   print('警告：未找到 ./build.sh 锚点')
           PY
 
-          # 3.5 说明：早期为了让 rpclib 编译通过曾把 LLVM_INCLUDE 指向 UE4 LibCxx，
-          # 但依赖现在改为复用预编译产物（见第 2 步），不再需要；而且这个改动会把
-          # UE4 LibCxx 头带进 LibCarla，触发"缺少 int8_t/labs"等 sysroot 错误，故撤销。
+          # 3.5 Setup.sh：把被注释掉的 libc++ 三件套打开并指向 UE4 自带 LibCxx + sysroot
+          # （仓库里这三行被注释、随后又被 unset，导致生成的 CMake 工具链里 -isystem/-L 为空）
+          python3 - Util/BuildTools/Setup.sh <<'PY'
+          import io, sys
+          p = sys.argv[1]
+          s = io.open(p, encoding='utf-8').read()
+          inc = ('# [hutb-ci] libc++ 指向 UE4\n'
+                 'export LLVM_INCLUDE="${UE4_ROOT}/Engine/Source/ThirdParty/Linux/LibCxx/include/c++/v1"\n'
+                 'export LLVM_LIBPATH="${UE4_ROOT}/Engine/Source/ThirdParty/Linux/LibCxx/lib/Linux/x86_64-unknown-linux-gnu"\n'
+                 'export UNREAL_HOSTED_CFLAGS="--sysroot=${UE4_ROOT}/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/v17_clang-10.0.1-centos7/x86_64-unknown-linux-gnu"')
+          changed = False
+          for key in ('UNREAL_HOSTED_CFLAGS', 'LLVM_INCLUDE', 'LLVM_LIBPATH'):
+              if ('unset ' + key) in s:
+                  s = s.replace('unset ' + key, inc if key == 'UNREAL_HOSTED_CFLAGS' else '# [hutb-ci] ' + key, 1)
+                  changed = True
+          if changed:
+              io.open(p, 'w', encoding='utf-8').write(s)
+              print('Setup.sh libc++/sysroot 已就绪')
+          else:
+              print('libc++/sysroot 已就绪，跳过')
+          PY
 
           echo "shim 就绪"
 
@@ -206,14 +224,8 @@ jobs:
       - name: 7. 编译 CarlaUE4Editor
         run: |
           set -o pipefail
-          INC="$UE4_ROOT/Engine/Source/ThirdParty/Linux/LibCxx/include/c++/v1"
-          LIB="$UE4_ROOT/Engine/Source/ThirdParty/Linux/LibCxx/lib/Linux/x86_64-unknown-linux-gnu"
-          SDK="$UE4_ROOT/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/v17_clang-10.0.1-centos7/x86_64-unknown-linux-gnu"
           # 清掉旧配置（CMAKE_CXX_FLAGS 会随 setup 重跑不断叠加，导致参数重复十几份）
           rm -rf Build/LibCarla Build/LibCppToolChain.cmake
-          CXXFLAGS="-std=c++14 -stdlib=libc++ -isystem $INC --sysroot=$SDK" \
-          CFLAGS="--sysroot=$SDK" \
-          LDFLAGS="-stdlib=libc++ -L$LIB --sysroot=$SDK" \
           make CarlaUE4Editor 2>&1 | tee /tmp/ci_editor.log
 
       # ------------------------------------------------------------------
