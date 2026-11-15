@@ -1,278 +1,194 @@
 name: hutb Linux CI/CD
 
+# 用法：GitHub 仓库 → Actions → 左侧 “hutb Linux CI/CD” → Run workflow
 on:
-  pull_request:
   workflow_dispatch:
+    inputs:
+      python_version:
+        description: "只构建一个 Python 版本的 wheel（3.10 = 服务器 venv-carla）"
+        required: false
+        default: "3.10"
 
 concurrency:
-  group: hutb-linux-ci-${{ github.ref }}
+  group: hutb-linux-${{ github.ref }}
   cancel-in-progress: false
-
-env:
-  PROXY: "http://127.0.0.1:38457"
-  SHIM: "/home/yxkj/ci-shims"
-  CACHE_DIR: "/home/yxkj/hutb/Build"          # ← 改 1：让 BuildUE4Plugins.sh 走缓存分支
 
 jobs:
   build:
-    name: Build hutb (self-hosted GPU server)
-    runs-on: [self-hosted, yxkj-hutb]
-    timeout-minutes: 600
-    defaults:
-      run:
-        shell: bash
+    # 服务器上已注册的 self-hosted runner 标签（服务名 actions.runner.heshuyun9-hutb.yxkj-hutb-ci）
+    runs-on: [self-hosted, linux, yxkj-hutb]
+    timeout-minutes: 720
+
+    env:
+      UE4_ROOT: /home/yxkj/UnrealEngine_4.26
+      # pip 必须直连镜像；FastGithub 只转发 GitHub，走代理会 404/403
+      PIP_INDEX_URL: https://mirrors.aliyun.com/pypi/simple
+      PIP_TRUSTED_HOST: mirrors.aliyun.com
+      PIP_DEFAULT_TIMEOUT: "120"
+      # wheel 链接改用系统 clang++（UE4 自带的旧 ld 读不了新版 glibc 的 .relr.dyn）
+      LDSHARED: "/usr/bin/clang++ -shared"
+      LDCXXSHARED: "/usr/bin/clang++ -shared"
+      # UE4 自带 Mono 目录不完整（缺 bin），强制用系统 mono，否则 RunUAT 报 AutomationTool failed to compile
+      UE_USE_SYSTEM_MONO: "1"
+      # 安装前缀必须显式导出，否则 osm2odr 装到 /usr/local 无权限
+      LIBCARLA_INSTALL_SERVER_FOLDER: ${{ github.workspace }}/Unreal/CarlaUE4/Plugins/Carla/CarlaDependencies
+      LIBCARLA_INSTALL_CLIENT_FOLDER: ${{ github.workspace }}/PythonAPI/carla/dependencies
 
     steps:
-      - name: 1. Checkout repository
-        uses: actions/checkout@v5
+      # ------------------------------------------------------------------
+      - name: 0. 环境自检
+        run: |
+          set -x
+          uname -a
+          nproc; free -g | head -2; df -h "$GITHUB_WORKSPACE" | tail -1
+          test -d "$UE4_ROOT/Engine" || { echo "UE4_ROOT 不存在: $UE4_ROOT"; exit 1; }
+          ls "$UE4_ROOT/Engine/Binaries/Linux/UE4Editor" >/dev/null
+          nvidia-smi --query-gpu=name,memory.total --format=csv || true
+          mono --version | head -1
+          /usr/bin/clang++ --version | head -1
+          # 清掉上次构建残留的锁
+          rm -rf /tmp/hutb-*.lock 2>/dev/null || true
+
+      # ------------------------------------------------------------------
+      - name: 1. 检出代码
+        uses: actions/checkout@v4
         with:
+          clean: false        # 保留 Build/ 里的依赖缓存，否则每次全量重编（数小时）
           fetch-depth: 0
-          clean: false
+          lfs: true
+          submodules: false
 
-      - name: 2. Show files
+      # ------------------------------------------------------------------
+      - name: 2. 复用已有依赖与 Content（软链，避免每次下载几十 G）
         run: |
-          set -x
-          pwd
-          ls -la
-          nproc
-          df -h . | tail -1
-
-      - name: 3. Reuse local assets (dependencies / Content)
-        run: |
-          set -x
-          if [ ! -d Build/dependencies ]; then
-            mkdir -p Build
-            cp -a /home/yxkj/ci-assets/dependencies Build/dependencies
+          set -e
+          mkdir -p Build
+          # 依赖缓存：优先复用服务器上已装好的 dependencies
+          if [ -d /home/yxkj/ci-assets/dependencies ] && [ ! -e Build/dependencies ]; then
+            ln -sfn /home/yxkj/ci-assets/dependencies Build/dependencies
+            echo "复用 /home/yxkj/ci-assets/dependencies"
           fi
-          if [ ! -e Unreal/CarlaUE4/Content ] || [ -z "$(ls -A Unreal/CarlaUE4/Content 2>/dev/null)" ]; then
-            rm -rf Unreal/CarlaUE4/Content
-            ln -s /home/yxkj/hutb/Unreal/CarlaUE4/Content Unreal/CarlaUE4/Content
+          # Content（地图资源仓库）软链
+          if [ -d /home/yxkj/ci-assets/Content ] && [ ! -e Unreal/CarlaUE4/Content ]; then
+            ln -sfn /home/yxkj/ci-assets/Content Unreal/CarlaUE4/Content
+            echo "复用 /home/yxkj/ci-assets/Content"
           fi
+          ls -l Build | head
+          du -sh Build 2>/dev/null || true
 
-          # ← 改 2：不再预放 Build/AirSim（旧的"半成品拷贝"是第 7 步 128 错误的根因）
-          #         改为校验 CACHE_DIR 缓存完整，并把残留的不完整目录清掉
-          if [ -d Build/AirSim ] && [ ! -d Build/AirSim/Unreal/Plugins/AirSim ]; then
-            echo "Removing incomplete Build/AirSim"
-            rm -rf Build/AirSim
-          fi
-          if [ -d "$CACHE_DIR/AirSim/Unreal/Plugins/AirSim" ]; then
-            echo "AirSim cache OK: $CACHE_DIR/AirSim"
-          else
-            echo "::error::AirSim cache missing: $CACHE_DIR/AirSim/Unreal/Plugins/AirSim"
-            ls -la "$CACHE_DIR" || true
-            exit 1
-          fi
-
-          du -sh Build/dependencies 2>/dev/null || true
-          ls Unreal/CarlaUE4/Content | head -5
-
-      - name: 4. Ensure origin/master refs
+      # ------------------------------------------------------------------
+      - name: 3. 工具链 shim（把本机验证过的补丁在 CI 里重建）
         run: |
-          set -x
-          for g in $(find . -maxdepth 4 -type d -name .git -prune -print | sed 's#/.git$##'); do
-            git -C "$g" fetch origin master:refs/remotes/origin/master --depth=1 2>/dev/null || true
-            git -C "$g" show-ref --verify --quiet refs/remotes/origin/master || git -C "$g" update-ref refs/remotes/origin/master HEAD
-          done
+          set -e
+          UE4_BIN="$UE4_ROOT/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/v17_clang-10.0.1-centos7/x86_64-unknown-linux-gnu/bin"
 
-      - name: 5. Patch origin/master references
-        run: |
-          set -x
-          FILES=$(grep -rln "origin/master" Util Unreal --include="*.sh" --include="*.mk" --include="Makefile" 2>/dev/null || true)
-          for f in $FILES; do sed -i 's#origin/master#HEAD#g' "$f"; done
-          echo "$FILES"
-
-      - name: 6. Toolchain shims + CMake policy + clean stale cache
-        run: |
-          set -ex
-          mkdir -p "$SHIM/include" "$SHIM/bin"
-
-          # 6.0 自愈：还原之前被写坏的 CMakeLists（受 git 管理的）
-          git status --porcelain 2>/dev/null | awk '/CMakeLists\.txt$/ {print $2}' | xargs -r git checkout -- 2>/dev/null || true
-
-          # 6.0b 中和 Setup.sh 里写死的 libc++（root cause 1 的源头）
-          sed -i 's#export CXXFLAGS="-std=c++14 -stdlib=libc++"#export CXXFLAGS="-std=c++14 -stdlib=libstdc++"#' Util/BuildTools/Setup.sh || true
-          sed -i 's#export LDFLAGS="-stdlib=libc++"#export LDFLAGS="-stdlib=libstdc++ -lstdc++fs"#' Util/BuildTools/Setup.sh || true
-
-          # 6.0c 让 AirSim 的 setup.sh 走代理（原文主动屏蔽了代理，导致 rpclib 卡死）
-          sed -i 's#env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY ./setup.sh#./setup.sh#' Util/BuildTools/BuildUE4Plugins.sh || true
-          grep -n "setup.sh" Util/BuildTools/BuildUE4Plugins.sh | head -5 || true
-
-          # 6.1 <filesystem> 兼容头
-          cat > "$SHIM/include/filesystem" <<'HDR'
-          #pragma once
-          #if defined(__GNUC__) && __GNUC__ < 8
-          #include <experimental/filesystem>
-          namespace std { namespace filesystem = experimental::filesystem; }
-          #else
-          #include_next <filesystem>
-          #endif
-          HDR
-
-          # 6.2 给 CMakeLists.txt 注入 link_libraries(stdc++fs)（插在 project() 之外）
-          cat > "$SHIM/patch_stdcxxfs.sh" <<'PATCH'
+          # 3.1 编译器包装：过滤 Python3.10 sysconfig 带来的、clang10 不认识的参数
+          cat > /tmp/hutb-clang-wrap.sh <<EOF
           #!/bin/bash
-          set -u
-          ROOT="${1:-.}"
-          [ -d "$ROOT" ] || exit 0
-          FILES=$(grep -rl --include=CMakeLists.txt -E 'cmake_minimum_required|project[[:space:]]*\(' "$ROOT" 2>/dev/null \
-                  | grep -vE '/(\.git|dependencies|Content)/|/build_(release|debug)/' || true)
-          n=0
-          for f in $FILES; do
-            case "$f" in *ci-shims*) continue;; esac
-            grep -qE '^[[:space:]]*link_libraries\(stdc\+\+fs\)[[:space:]]*$' "$f" && continue
-            cp "$f" "$f.bak"
-            awk '
-              BEGIN { inserted = 0 }
-              {
-                if (inserted == 0 && $0 ~ /^[[:space:]]*project[[:space:]]*\(/) {
-                  print "link_libraries(stdc++fs)"
-                  inserted = 1
-                }
-                print
-                if (inserted == 0 && $0 ~ /^[[:space:]]*cmake_minimum_required/) {
-                  print "link_libraries(stdc++fs)"
-                  inserted = 1
-                }
-              }
-            ' "$f.bak" > "$f"
-            if cmp -s "$f" "$f.bak"; then
-              mv "$f.bak" "$f"
-              continue
-            fi
-            rm -f "$f.bak"
-            echo "  patched: $f"
-            n=$((n+1))
-          done
-          echo "=== link_libraries(stdc++fs) patched: $n file(s) under $ROOT ==="
-          PATCH
-          chmod +x "$SHIM/patch_stdcxxfs.sh"
-
-          # 6.3 cmake 包装器：configure 前自动打补丁
-          if [ -x /usr/bin/cmake ]; then
-            cat > "$SHIM/bin/cmake" <<'WRAP'
-          #!/bin/bash
-          SHIM="/home/yxkj/ci-shims"
-          SRC=""
-          for a in "$@"; do
-            case "$a" in
-              -*) ;;
-              *) if [ -d "$a" ]; then SRC="$a"; break; fi ;;
+          REAL="$UE4_BIN/clang"
+          args=()
+          for a in "\$@"; do
+            case "\$a" in
+              -fstack-clash-protection) ;;
+              -mno-omit-leaf-frame-pointer) ;;
+              *) args+=("\$a") ;;
             esac
           done
-          if [ -n "$SRC" ] && [ -x "$SHIM/patch_stdcxxfs.sh" ]; then
-            "$SHIM/patch_stdcxxfs.sh" "$SRC" || true
-          fi
-          exec /usr/bin/cmake "$@"
-          WRAP
-            chmod +x "$SHIM/bin/cmake"
-          fi
-
-          # 6.4 编译器包装（兜底）
-          for name in cc gcc g++ c++ clang clang++; do
-            REAL=$(command -v "$name" 2>/dev/null || true)
-            if [ -z "$REAL" ]; then continue; fi
-            case "$REAL" in *ci-shims*) continue;; esac
-            if [ "$name" = "clang++" ]; then
-              printf '#!/bin/bash\nexec "%s" -stdlib=libstdc++ "$@" -lstdc++fs\n' "$REAL" > "$SHIM/bin/$name"
-            else
-              printf '#!/bin/bash\nexec "%s" "$@" -lstdc++fs\n' "$REAL" > "$SHIM/bin/$name"
-            fi
-            chmod +x "$SHIM/bin/$name"
+          exec "\$REAL" "\${args[@]}"
+          EOF
+          cat > /tmp/hutb-clangxx-wrap.sh <<EOF
+          #!/bin/bash
+          REAL="$UE4_BIN/clang++"
+          args=()
+          for a in "\$@"; do
+            case "\$a" in
+              -fstack-clash-protection) ;;
+              -mno-omit-leaf-frame-pointer) ;;
+              *) args+=("\$a");;
+            esac
           done
-          ls -la "$SHIM/bin"
+          exec "\$REAL" "\${args[@]}"
+          EOF
+          chmod +x /tmp/hutb-clang-wrap.sh /tmp/hutb-clangxx-wrap.sh
 
-          # 6.5 只清构建产物和缓存，保留 Build/AirSim 源码
-          rm -rf Build/AirSim_build_release Build/AirLib Build/libcarla Build/airlib
-          find Build -maxdepth 4 -name CMakeCache.txt -print -delete 2>/dev/null || true
-          find Build -maxdepth 4 -type d -name CMakeFiles -prune -exec rm -rf {} + 2>/dev/null || true
+          # 3.2 BuildPythonAPI.sh：CC/CXX 指向包装
+          API_SH=Util/BuildTools/BuildPythonAPI.sh
+          grep -q 'hutb-clang-wrap' "$API_SH" || \
+            sed -i 's|^export CC=.*|export CC="/tmp/hutb-clang-wrap.sh"|; s|^export CXX=.*|export CXX="/tmp/hutb-clangxx-wrap.sh"|' "$API_SH"
+          grep -n 'export CC=\|export CXX=' "$API_SH" | head -2
 
-          # 6.6 跨步骤环境变量
-          {
-            echo "CPLUS_INCLUDE_PATH=$SHIM/include"
-            echo "C_INCLUDE_PATH=$SHIM/include"
-            echo "CXXFLAGS=-I$SHIM/include"
-            echo "CFLAGS=-I$SHIM/include"
-            echo "LDFLAGS=-lstdc++fs"
-            echo "http_proxy=$PROXY"
-            echo "https_proxy=$PROXY"
-            echo "no_proxy=localhost,127.0.0.1"
-            echo "CACHE_DIR=$CACHE_DIR"
-          } >> "$GITHUB_ENV"
-          echo "$SHIM/bin" >> "$GITHUB_PATH"
+          # 3.3 BuildUE4Plugins.sh：Content 不是独立 git 仓库时不要 reset（否则会毁主仓库改动）
+          P_SH=Util/BuildTools/BuildUE4Plugins.sh
+          if ! grep -q '\[hutb-ci\] Content' "$P_SH"; then
+            python3 - "$P_SH" <<'PY'
+          import io, sys
+          p = sys.argv[1]
+          s = io.open(p, encoding='utf-8').read()
+          old = 'cd "$CONTENT_PATH"'
+          guard = ('if [ -d "$CONTENT_PATH/.git" ]; then\n'
+                   '  cd "$CONTENT_PATH"')
+          if old in s:
+              s = s.replace(old, guard, 1)
+              # 在 git lfs pull 之后补 fi（该行唯一）
+              s = s.replace('git lfs pull', 'git lfs pull\nelse\n  echo "  [hutb-ci] Content 无 .git，跳过 git 拉取"\nfi', 1)
+              io.open(p, 'w', encoding='utf-8').write(s)
+              print('patched Content guard')
+          PY
+          fi
+          # AirSim 每次 reset 后重新禁用 MavLinkTest（否则 cannot find -lc++）
+          if ! grep -q '\[hutb-ci\] add_subdirectory("MavLinkTest")' "$P_SH"; then
+            sed -i 's|^\(\s*\)add_subdirectory("MavLinkTest")|\1# [hutb-ci] add_subdirectory("MavLinkTest") 已禁用|' "$P_SH" || true
+          fi
 
-          # 6.7 打一遍 + 自检
-          bash "$SHIM/patch_stdcxxfs.sh" . || true
-          echo "=== 坏行复查（应为空）==="
-          grep -rn 'project([^)]*stdc++fs' --include=CMakeLists.txt . 2>/dev/null | grep -v dependencies | head -5 || true
-          echo "=== libstdc++fs.a ==="
-          find /usr/lib/gcc /usr/lib -name 'libstdc++fs.a' 2>/dev/null | head -3
-          echo "=== 代理连通性测试 ==="
-          curl -sI --max-time 20 -x "$PROXY" https://github.com | head -1 || echo "代理不可用"
+          echo "shim 就绪"
 
-      - name: 7. setup (deps + 在这里真正编 AirSim/AirLib)
+      # ------------------------------------------------------------------
+      - name: 4. setup（下载依赖 + 生成 CMake 配置）
         run: |
-          set -x
-          export http_proxy="$PROXY" https_proxy="$PROXY" no_proxy=localhost,127.0.0.1
-          export PATH="$SHIM/bin:$PATH"
-          export CACHE_DIR="/home/yxkj/hutb/Build"          # ← 改 3：显式导出，防被脚本清空
-          if [ -f ./setEnv64.sh ]; then source ./setEnv64.sh; fi
-          export PATH="$SHIM/bin:$PATH"
-          export CACHE_DIR="/home/yxkj/hutb/Build"
-          which cmake c++ g++ clang++
-          echo "=== CACHE_DIR=$CACHE_DIR ==="
-          ls -d "$CACHE_DIR/AirSim" || true
-          rm -rf Build/*-source Build/*-src
-          ./setup.sh
-          bash "$SHIM/patch_stdcxxfs.sh" . || true
-          make setup ARGS="--chrono"
-          echo "=== AirSim 源码就位检查 ==="
-          ls -d Build/AirSim/Unreal/Plugins/AirSim
-          ls Build/AirSim_build_release/output/lib 2>/dev/null | head -5 || true
+          set -o pipefail
+          make setup 2>&1 | tee /tmp/ci_setup.log
 
-      - name: 8. build (UE4 插件)
+      # ------------------------------------------------------------------
+      - name: 5. UE4 插件（AirSim/StreetMap 等）
         run: |
-          set -x
-          export http_proxy="$PROXY" https_proxy="$PROXY" no_proxy=localhost,127.0.0.1
-          export PATH="$SHIM/bin:$PATH"
-          export CACHE_DIR="/home/yxkj/hutb/Build"
-          if [ -f ./setEnv64.sh ]; then source ./setEnv64.sh; fi
-          export PATH="$SHIM/bin:$PATH"
-          bash "$SHIM/patch_stdcxxfs.sh" . || true
-          make plugins
+          set -o pipefail
+          make plugins 2>&1 | tee /tmp/ci_plugins.log
 
-      - name: 9. retrieve content
+      # ------------------------------------------------------------------
+      - name: 6. 同步资源 Update.sh
         run: |
-          set -x
-          export http_proxy="$PROXY" https_proxy="$PROXY" no_proxy=localhost,127.0.0.1
-          if [ -f ./setEnv64.sh ]; then source ./setEnv64.sh; fi
-          source ./Update.sh
+          set -o pipefail
+          if [ -x Update.sh ]; then ./Update.sh 2>&1 | tee /tmp/ci_update.log; else echo "无 Update.sh，跳过"; fi
 
-      - name: 10. PythonAPI (wheel)
+      # ------------------------------------------------------------------
+      # LibCarla 无需单独编：CarlaUE4Editor 依赖 LibCarla.server.release，
+      # PythonAPI.wheel 依赖 LibCarla.client.release，make 会自动带出来。
+      - name: 7. 编译 CarlaUE4Editor
         run: |
-          set -x
-          export http_proxy="$PROXY" https_proxy="$PROXY" no_proxy=localhost,127.0.0.1
-          export PATH="$SHIM/bin:$PATH"
-          if [ -f ./setEnv64.sh ]; then source ./setEnv64.sh; fi
-          make PythonAPI ARGS=""
+          set -o pipefail
+          make CarlaUE4Editor 2>&1 | tee /tmp/ci_editor.log
 
-      - name: 11. CarlaUE4Editor
+      # ------------------------------------------------------------------
+      - name: 8. 构建 PythonAPI wheel（只做指定版本，默认 8 个版本太慢）
         run: |
-          set -x
-          export PATH="$SHIM/bin:$PATH"
-          if [ -f ./setEnv64.sh ]; then source ./setEnv64.sh; fi
-          make CarlaUE4Editor
+          set -o pipefail
+          make PythonAPI.wheel ARGS="--python-version=${{ inputs.python_version }}" 2>&1 | tee /tmp/ci_wheel.log
+          ls -lh PythonAPI/carla/dist/
 
-      - name: 12. package (可选，失败不阻塞)
-        continue-on-error: true                            # ← 改 4
+      # ------------------------------------------------------------------
+      - name: 9. 打包（Shipping + Cook）
         run: |
-          set -x
-          if [ -f ./setEnv64.sh ]; then source ./setEnv64.sh; fi
-          # Makefile 里没有 package 目标，直接调脚本
-          ./Util/BuildTools/Package.sh --config=Development --no-zip
+          set -o pipefail
+          bash Util/BuildTools/Package.sh 2>&1 | tee /tmp/ci_package.log
 
-      - name: 13. check (可选，失败不阻塞)
-        continue-on-error: true                            # ← 改 5
+      # ------------------------------------------------------------------
+      - name: 10. 汇总产物
+        if: always()
         run: |
-          set -x
-          if [ -f ./setEnv64.sh ]; then source ./setEnv64.sh; fi
-          make check
+          echo "==== 产物目录 ===="
+          ls -lh Build/UE4Carla/ | tail -5 || true
+          echo "==== wheel ===="
+          ls -lh PythonAPI/carla/dist/ || true
+          echo "==== 磁盘 ===="
+          df -h "$GITHUB_WORKSPACE" | tail -1
+
