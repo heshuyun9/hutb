@@ -117,24 +117,37 @@ jobs:
             sed -i 's|^export CC=.*|export CC="/tmp/hutb-clang-wrap.sh"|; s|^export CXX=.*|export CXX="/tmp/hutb-clangxx-wrap.sh"|' "$API_SH"
           grep -n 'export CC=\|export CXX=' "$API_SH" | head -2
 
-          # 3.3 BuildUE4Plugins.sh：Content 不是独立 git 仓库时不要 reset（否则会毁主仓库改动）
+          # 3.3 BuildUE4Plugins.sh：Content 已存在但不是独立 git 仓库时，不能再 git reset
           P_SH=Util/BuildTools/BuildUE4Plugins.sh
-          if ! grep -q '\[hutb-ci\] Content' "$P_SH"; then
-            python3 - "$P_SH" <<'PY'
+          python3 - "$P_SH" <<'PY'
           import io, sys
           p = sys.argv[1]
-          s = io.open(p, encoding='utf-8').read()
-          old = 'cd "$CONTENT_PATH"'
-          guard = ('if [ -d "$CONTENT_PATH/.git" ]; then\n'
-                   '  cd "$CONTENT_PATH"')
-          if old in s:
-              s = s.replace(old, guard, 1)
-              # 在 git lfs pull 之后补 fi（该行唯一）
-              s = s.replace('git lfs pull', 'git lfs pull\nelse\n  echo "  [hutb-ci] Content 无 .git，跳过 git 拉取"\nfi', 1)
-              io.open(p, 'w', encoding='utf-8').write(s)
-              print('patched Content guard')
+          lines = io.open(p, encoding='utf-8').read().split('\n')
+          if any('已存在但无 .git' in l for l in lines):
+              print('Content 保护已存在，跳过')
+          else:
+              out, i, patched = [], 0, False
+              while i < len(lines):
+                  out.append(lines[i])
+                  if 'Content directory already exists' in lines[i]:
+                      j, block = i + 1, []
+                      while j < len(lines) and lines[j].strip() and (
+                              lines[j].strip().startswith('cd ') or
+                              lines[j].strip().startswith('git ')):
+                          block.append(lines[j]); j += 1
+                      if block:
+                          out.append(' if [ -d "$CONTENT_PATH/.git" ]; then')
+                          out.extend(block)
+                          out.append(' else')
+                          out.append('   echo "  [hutb-ci] Content 已存在但无 .git，跳过 git 拉取"')
+                          out.append(' fi')
+                          patched = True
+                          i = j
+                          continue
+                  i += 1
+              io.open(p, 'w', encoding='utf-8').write('\n'.join(out))
+              print('Content 保护插入成功' if patched else '警告：未找到 Content 分支，未打补丁')
           PY
-          fi
           # AirSim 每次 reset 后重新禁用 MavLinkTest（否则 cannot find -lc++）
           if ! grep -q '\[hutb-ci\] add_subdirectory("MavLinkTest")' "$P_SH"; then
             sed -i 's|^\(\s*\)add_subdirectory("MavLinkTest")|\1# [hutb-ci] add_subdirectory("MavLinkTest") 已禁用|' "$P_SH" || true
