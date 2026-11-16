@@ -244,7 +244,7 @@ jobs:
                       '    UE4_INC=/home/yxkj/UnrealEngine_4.26/Engine/Source/ThirdParty/Linux/LibCxx/include/c++/v1',
                       '    UE4_LIB=/home/yxkj/UnrealEngine_4.26/Engine/Source/ThirdParty/Linux/LibCxx/lib/Linux/x86_64-unknown-linux-gnu',
                       '    UE4_SDK=/home/yxkj/UnrealEngine_4.26/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/v17_clang-10.0.1-centos7/x86_64-unknown-linux-gnu',
-                      '    sed -i -e "s|^export CC=.*|export CC=\\"$UE4_BIN/clang\\"|" -e "s|^export CXX=.*|export CXX=\\"$UE4_BIN/clang++\\"|" setup.sh',
+                      '    sed -i -e "s|^export CC=.*|export CC=\\"$UE4_BIN/clang\\"|" -e "s|^export CXX=.*|export CXX=\\"$UE4_BIN/clang++\\"|" setup.sh build.sh',
                       '    export CFLAGS="-stdlib=libc++ -isystem $UE4_INC --sysroot=$UE4_SDK"',
                       '    export CXXFLAGS="-stdlib=libc++ -isystem $UE4_INC --sysroot=$UE4_SDK"',
                       '    export LDFLAGS="-stdlib=libc++ -L$UE4_LIB --sysroot=$UE4_SDK"',
