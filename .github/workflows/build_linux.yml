@@ -216,6 +216,13 @@ jobs:
             sed -i 's|/home/ubuntu/UnrealEngine_4.26|/home/yxkj/UnrealEngine_4.26|g' "$f"
           done
 
+          # 3.9 Target.cs 里的 /wd4103 是 MSVC 专用参数，Linux clang 会把它拼到 -MF 后面
+          #     变成 ".../xxx.cpp.d/wd4103" 从而报 "No such file or directory"
+          for f in Unreal/CarlaUE4/Source/CarlaUE4.Target.cs Unreal/CarlaUE4/Source/CarlaUE4Editor.Target.cs; do
+            [ -f "$f" ] && sed -i 's|^\(\s*\)AdditionalCompilerArguments = "/wd4103";|\1AdditionalCompilerArguments = "";|' "$f"
+            [ -f "$f" ] && grep -n 'AdditionalCompilerArguments' "$f"
+          done
+
           echo "shim 就绪"
 
       # ------------------------------------------------------------------
