@@ -341,7 +341,10 @@ jobs:
       - name: 9. 打包（Shipping + Cook）
         run: |
           set -o pipefail
-          bash Util/BuildTools/Package.sh 2>&1 | tee /tmp/ci_package.log
+          # ExitCode=137：拆 Unity 后的 Shipping 编译单元很吃内存，56 核并行会打满 62G。
+          # 用 taskset 把可见 CPU 限到 6 核（UBT 按 nproc 决定并行度），峰值约 30G。
+          nproc
+          taskset -c 0-5 bash Util/BuildTools/Package.sh --no-zip 2>&1 | tee /tmp/ci_package.log
 
       # ------------------------------------------------------------------
       - name: 10. 汇总产物
