@@ -260,6 +260,28 @@ jobs:
                   print('AirSim 工具链补丁已注入（第 %d 行前）' % (idx + 1))
           PY
 
+          # 3.11 两份 librpc.a 重复符号：AirSim 自带的 deps/rpclib/lib/librpc.a（setup 时用
+          #      libstdc++ 编出）与 CarlaDependencies/lib/librpc.a（libc++）同时进链接行，
+          #      lld 报 22 个 duplicate symbol: rpc::server::*。只保留 Carla 的 libc++ 版。
+          python3 - Unreal/CarlaUE4/Plugins/AirSim/Source/AirSim.Build.cs <<'PY'
+          import io, sys
+          p = sys.argv[1]
+          s = io.open(p, encoding='utf-8').read()
+          if 'hutb-ci] rpclib' in s:
+              print('rpclib 去重补丁已存在，跳过')
+          else:
+              old = ('                LoadAirSimDependency(Target, "rpclib", "rpc");\n'
+                     '                break;\n\n            case CompileMode.CppCompileNoRpc:')
+              new = ('                // [hutb-ci] rpclib 由 CarlaDependencies 提供（libc++ 版），避免两份 librpc.a 重复符号\n'
+                     '                // LoadAirSimDependency(Target, "rpclib", "rpc");\n'
+                     '                break;\n\n            case CompileMode.CppCompileNoRpc:')
+              if old in s:
+                  io.open(p, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+                  print('rpclib 去重补丁已写入')
+              else:
+                  print('警告：AirSim.Build.cs 锚点未命中')
+          PY
+
           echo "shim 就绪"
 
       # ------------------------------------------------------------------
@@ -269,6 +291,17 @@ jobs:
           # 清掉旧的 AirSim 构建缓存，强制用 Step 3.10 打补丁后的工具链重编 AirLib
           rm -rf Build/AirSim
           make setup 2>&1 | tee /tmp/ci_setup.log
+
+          # setup 里 AirSim 的 build.sh 会把新编的 .a 拷到 Build/AirSim/AirLib，
+          # 但同步到 Unreal/CarlaUE4/Plugins/AirSim/Source/AirLib 的那一步带着
+          # `rsync -a`（保留旧 mtime）且有条件判断，CI 里经常没刷新，导致插件目录
+          # 仍是上一轮 g++(libstdc++) 编的 libMavLinkCom.a → 链接报 __cxx11 未定义。
+          # 这里显式用新产物覆盖。
+          AIR=Unreal/CarlaUE4/Plugins/AirSim/Source/AirLib
+          cp -f Build/AirSim/AirLib/lib/libAirLib.a "$AIR/lib/libAirLib.a"
+          cp -f Build/AirSim/AirLib/deps/MavLinkCom/lib/libMavLinkCom.a "$AIR/deps/MavLinkCom/lib/libMavLinkCom.a"
+          # librpc.a 不覆盖：CarlaDependencies 的 libc++ 版已在链接行上，两份会 duplicate symbol
+          ls -l "$AIR/lib/libAirLib.a" "$AIR/deps/MavLinkCom/lib/libMavLinkCom.a"
 
       # ------------------------------------------------------------------
       # 5. UE4 插件（AirSim/StreetMap 等）
@@ -320,4 +353,3 @@ jobs:
           ls -lh PythonAPI/carla/dist/ || true
           echo "==== 磁盘 ===="
           df -h "$GITHUB_WORKSPACE" | tail -1
-
