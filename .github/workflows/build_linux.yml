@@ -255,14 +255,13 @@ jobs:
           # 清掉旧配置（CMAKE_CXX_FLAGS 会随 setup 重跑不断叠加，导致参数重复十几份）
           rm -rf Build/LibCarla Build/LibCppToolChain.cmake
           # AirSim 插件链接的 libAirLib.a：CI 里 build.sh 重新生成的那份缺 RPC 符号
-          # （CarRpcLibServer 等），用本机已验证的完整版本覆盖（两个路径都要：Built.cs 实际链接 AirLib/lib/）
-          for REL in Unreal/CarlaUE4/Plugins/AirSim/Source/AirLib/lib/libAirLib.a \
-                     Unreal/CarlaUE4/Plugins/AirSim/Source/AirLib/lib/x64/Release/libAirLib.a; do
-            if [ -f /home/yxkj/hutb/$REL ]; then
-              cp -f /home/yxkj/hutb/$REL "$REL"
-              ls -l "$REL"
-            fi
-          done
+          # （CarRpcLibServer 等），用本机已验证的完整版本覆盖。
+          # 只能覆盖 AirLib/lib/libAirLib.a：x64/Release 那份同时保留的话会重复链接导致 duplicate symbol
+          REL=Unreal/CarlaUE4/Plugins/AirSim/Source/AirLib/lib/libAirLib.a
+          if [ -f /home/yxkj/hutb/$REL ]; then
+            cp -f /home/yxkj/hutb/$REL "$REL"
+            ls -l "$REL"
+          fi
           make CarlaUE4Editor 2>&1 | tee /tmp/ci_editor.log
 
       # ------------------------------------------------------------------
