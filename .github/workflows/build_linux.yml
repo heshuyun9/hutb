@@ -225,32 +225,35 @@ jobs:
 
           # 3.10 AirSim 的 setup.sh 把 CC/CXX 写死成 /usr/bin/gcc(g++)，导致 libAirLib.a
           #      用 libstdc++(std::__cxx11) 编出来，与插件本体 libc++(std::__1) ABI 不兼容。
-          #      在 BuildUE4Plugins.sh 里调用 setup.sh 之前插入工具链改写。
+          #      在 BuildUE4Plugins.sh 里调用 setup.sh 的那一行之前，插入工具链改写 + gitlab 绕过代理。
           python3 - Util/BuildTools/BuildUE4Plugins.sh <<'PY'
           import io
           p = 'Util/BuildTools/BuildUE4Plugins.sh'
-          s = io.open(p, encoding='utf-8').read()
-          if 'hutb-ci airsim toolchain' in s:
+          lines = io.open(p, encoding='utf-8').read().split('\n')
+          if any('hutb-ci airsim toolchain' in l for l in lines):
               print('AirSim 工具链补丁已存在，跳过')
           else:
-              anchor = './setup.sh'
-              inject = (
-                  '# [hutb-ci airsim toolchain] AirSim 默认用 g++/libstdc++，与 UE4 插件 libc++ 的 ABI 不兼容\n'
-                  'UE4_BIN=/home/yxkj/UnrealEngine_4.26/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/v17_clang-10.0.1-centos7/x86_64-unknown-linux-gnu/bin\n'
-                  'UE4_INC=/home/yxkj/UnrealEngine_4.26/Engine/Source/ThirdParty/Linux/LibCxx/include/c++/v1\n'
-                  'UE4_LIB=/home/yxkj/UnrealEngine_4.26/Engine/Source/ThirdParty/Linux/LibCxx/lib/Linux/x86_64-unknown-linux-gnu\n'
-                  'UE4_SDK=/home/yxkj/UnrealEngine_4.26/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/v17_clang-10.0.1-centos7/x86_64-unknown-linux-gnu\n'
-                  'sed -i -e "s|^export CC=.*|export CC=\\"$UE4_BIN/clang\\"|" -e "s|^export CXX=.*|export CXX=\\"$UE4_BIN/clang++\\"|" setup.sh\n'
-                  'export CFLAGS="-stdlib=libc++ -isystem $UE4_INC --sysroot=$UE4_SDK"\n'
-                  'export CXXFLAGS="-stdlib=libc++ -isystem $UE4_INC --sysroot=$UE4_SDK"\n'
-                  'export LDFLAGS="-stdlib=libc++ -L$UE4_LIB --sysroot=$UE4_SDK"\n'
-              )
-              if anchor in s:
-                  s = s.replace(anchor, inject + anchor, 1)
-                  io.open(p, 'w', encoding='utf-8').write(s)
-                  print('AirSim 工具链补丁已注入')
+              idx = next((i for i, l in enumerate(lines)
+                          if 'HTTP_PROXY' in l and './setup.sh' in l), None)
+              if idx is None:
+                  print('警告：未找到 setup.sh 调用行')
               else:
-                  print('警告：未找到 ./setup.sh 锚点')
+                  block = [
+                      '    # [hutb-ci airsim toolchain] AirSim 默认用 g++/libstdc++，与 UE4 插件 libc++ 的 ABI 不兼容',
+                      '    UE4_BIN=/home/yxkj/UnrealEngine_4.26/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/v17_clang-10.0.1-centos7/x86_64-unknown-linux-gnu/bin',
+                      '    UE4_INC=/home/yxkj/UnrealEngine_4.26/Engine/Source/ThirdParty/Linux/LibCxx/include/c++/v1',
+                      '    UE4_LIB=/home/yxkj/UnrealEngine_4.26/Engine/Source/ThirdParty/Linux/LibCxx/lib/Linux/x86_64-unknown-linux-gnu',
+                      '    UE4_SDK=/home/yxkj/UnrealEngine_4.26/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/v17_clang-10.0.1-centos7/x86_64-unknown-linux-gnu',
+                      '    sed -i -e "s|^export CC=.*|export CC=\\"$UE4_BIN/clang\\"|" -e "s|^export CXX=.*|export CXX=\\"$UE4_BIN/clang++\\"|" setup.sh',
+                      '    export CFLAGS="-stdlib=libc++ -isystem $UE4_INC --sysroot=$UE4_SDK"',
+                      '    export CXXFLAGS="-stdlib=libc++ -isystem $UE4_INC --sysroot=$UE4_SDK"',
+                      '    export LDFLAGS="-stdlib=libc++ -L$UE4_LIB --sysroot=$UE4_SDK"',
+                      '    # eigen/rpclib 从 gitlab 下载，FastGithub 代理会返回 404，必须直连',
+                      '    export no_proxy="gitlab.com,${no_proxy}" NO_PROXY="gitlab.com,${NO_PROXY}"',
+                  ]
+                  lines[idx:idx] = block
+                  io.open(p, 'w', encoding='utf-8').write('\n'.join(lines))
+                  print('AirSim 工具链补丁已注入（第 %d 行前）' % (idx + 1))
           PY
 
           echo "shim 就绪"
