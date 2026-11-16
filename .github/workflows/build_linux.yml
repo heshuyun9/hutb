@@ -223,25 +223,43 @@ jobs:
             [ -f "$f" ] && grep -n 'AdditionalCompilerArguments' "$f"
           done
 
+          # 3.10 AirSim 的 setup.sh 把 CC/CXX 写死成 /usr/bin/gcc(g++)，导致 libAirLib.a
+          #      用 libstdc++(std::__cxx11) 编出来，与插件本体 libc++(std::__1) ABI 不兼容。
+          #      在 BuildUE4Plugins.sh 里调用 setup.sh 之前插入工具链改写。
+          python3 - Util/BuildTools/BuildUE4Plugins.sh <<'PY'
+          import io
+          p = 'Util/BuildTools/BuildUE4Plugins.sh'
+          s = io.open(p, encoding='utf-8').read()
+          if 'hutb-ci airsim toolchain' in s:
+              print('AirSim 工具链补丁已存在，跳过')
+          else:
+              anchor = './setup.sh'
+              inject = (
+                  '# [hutb-ci airsim toolchain] AirSim 默认用 g++/libstdc++，与 UE4 插件 libc++ 的 ABI 不兼容\n'
+                  'UE4_BIN=/home/yxkj/UnrealEngine_4.26/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/v17_clang-10.0.1-centos7/x86_64-unknown-linux-gnu/bin\n'
+                  'UE4_INC=/home/yxkj/UnrealEngine_4.26/Engine/Source/ThirdParty/Linux/LibCxx/include/c++/v1\n'
+                  'UE4_LIB=/home/yxkj/UnrealEngine_4.26/Engine/Source/ThirdParty/Linux/LibCxx/lib/Linux/x86_64-unknown-linux-gnu\n'
+                  'UE4_SDK=/home/yxkj/UnrealEngine_4.26/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/v17_clang-10.0.1-centos7/x86_64-unknown-linux-gnu\n'
+                  'sed -i -e "s|^export CC=.*|export CC=\\"$UE4_BIN/clang\\"|" -e "s|^export CXX=.*|export CXX=\\"$UE4_BIN/clang++\\"|" setup.sh\n'
+                  'export CFLAGS="-stdlib=libc++ -isystem $UE4_INC --sysroot=$UE4_SDK"\n'
+                  'export CXXFLAGS="-stdlib=libc++ -isystem $UE4_INC --sysroot=$UE4_SDK"\n'
+                  'export LDFLAGS="-stdlib=libc++ -L$UE4_LIB --sysroot=$UE4_SDK"\n'
+              )
+              if anchor in s:
+                  s = s.replace(anchor, inject + anchor, 1)
+                  io.open(p, 'w', encoding='utf-8').write(s)
+                  print('AirSim 工具链补丁已注入')
+              else:
+                  print('警告：未找到 ./setup.sh 锚点')
+          PY
+
           echo "shim 就绪"
 
       # ------------------------------------------------------------------
       - name: 4. setup（下载依赖 + 生成 CMake 配置）
         run: |
           set -o pipefail
-          # AirSim 的 libAirLib.a 在 setup 阶段（downloadplugins）就会编出来。
-          # 默认 g++/libstdc++ → std::__cxx11 ABI，与插件本体（UE4 clang + libc++，std::__1）不兼容，
-          # 链接时报 CarRpcLibServer 等 undefined symbol。这里强制用 UE4 工具链编 AirLib。
-          UE4_BIN="$UE4_ROOT/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/v17_clang-10.0.1-centos7/x86_64-unknown-linux-gnu/bin"
-          LLVM_INC="$UE4_ROOT/Engine/Source/ThirdParty/Linux/LibCxx/include/c++/v1"
-          LLVM_LIB="$UE4_ROOT/Engine/Source/ThirdParty/Linux/LibCxx/lib/Linux/x86_64-unknown-linux-gnu"
-          SYSROOT="$UE4_ROOT/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/v17_clang-10.0.1-centos7/x86_64-unknown-linux-gnu"
-          export CC="$UE4_BIN/clang"
-          export CXX="$UE4_BIN/clang++"
-          export CFLAGS="-stdlib=libc++ -isystem $LLVM_INC --sysroot=$SYSROOT"
-          export CXXFLAGS="-stdlib=libc++ -isystem $LLVM_INC --sysroot=$SYSROOT"
-          export LDFLAGS="-stdlib=libc++ -L$LLVM_LIB --sysroot=$SYSROOT"
-          # 清掉旧的 AirSim 构建缓存，否则 cmake 会沿用上次 g++ 的编译结果
+          # 清掉旧的 AirSim 构建缓存，强制用 Step 3.10 打补丁后的工具链重编 AirLib
           rm -rf Build/AirSim
           make setup 2>&1 | tee /tmp/ci_setup.log
 
