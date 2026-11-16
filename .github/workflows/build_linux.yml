@@ -252,6 +252,8 @@ jobs:
                       '    export no_proxy="gitlab.com,${no_proxy}" NO_PROXY="gitlab.com,${NO_PROXY}"',
                   ]
                   lines[idx:idx] = block
+                  # setup.sh 需要代理拉 GitHub（rpclib/msgpack），但 gitlab 必须直连
+                  lines[idx + len(block)] = '    no_proxy="gitlab.com,${no_proxy}" NO_PROXY="gitlab.com,${NO_PROXY}" ./setup.sh'
                   io.open(p, 'w', encoding='utf-8').write('\n'.join(lines))
                   print('AirSim 工具链补丁已注入（第 %d 行前）' % (idx + 1))
           PY
