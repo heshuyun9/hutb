@@ -346,6 +346,11 @@ jobs:
             # fast：复用服务器上的 AirSim 源码缓存。BuildUE4Plugins.sh 会优先
             # cp -a "$CACHE_DIR/AirSim"，避免每次从 GitHub clone（大仓库经常被代理重置/卡死）
             export CACHE_DIR=/home/yxkj/ci-assets
+            # 缓存里不能带上一次的编译产物：CMakeCache.txt 里写死了旧的绝对路径，
+            # 换到 CI 工作区会被 cmake 判定目录不一致直接失败
+            rm -rf "$CACHE_DIR/AirSim/build_release" "$CACHE_DIR/AirSim/build_debug" "$CACHE_DIR/AirSim/cmake_build"
+            rm -f "$CACHE_DIR/AirSim/cmake/CMakeCache.txt"
+            rm -rf "$CACHE_DIR/AirSim/cmake/CMakeFiles"
             echo "[fast] AirSim 源码缓存 -> $CACHE_DIR/AirSim"
           fi
           # 清掉旧的 AirSim 构建目录，强制用 Step 3.10 打补丁后的工具链重编 AirLib
