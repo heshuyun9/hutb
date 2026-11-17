@@ -342,8 +342,13 @@ jobs:
           if [ "$MODE" = "full" ]; then
             echo "[full] 执行 ./setup.sh 从零准备依赖"
             ./setup.sh 2>&1 | tee /tmp/ci_setup_sh.log
+          else
+            # fast：复用服务器上的 AirSim 源码缓存。BuildUE4Plugins.sh 会优先
+            # cp -a "$CACHE_DIR/AirSim"，避免每次从 GitHub clone（大仓库经常被代理重置/卡死）
+            export CACHE_DIR=/home/yxkj/ci-assets
+            echo "[fast] AirSim 源码缓存 -> $CACHE_DIR/AirSim"
           fi
-          # 清掉旧的 AirSim 构建缓存，强制用 Step 3.10 打补丁后的工具链重编 AirLib
+          # 清掉旧的 AirSim 构建目录，强制用 Step 3.10 打补丁后的工具链重编 AirLib
           rm -rf Build/AirSim
           make setup 2>&1 | tee /tmp/ci_setup.log
 
