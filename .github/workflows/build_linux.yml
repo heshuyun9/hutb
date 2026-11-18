@@ -104,10 +104,16 @@ jobs:
               echo "替换掉旧 dependencies 目录为软链"
             fi
           fi
-          # Content（地图资源仓库）软链
-          if [ -d /home/yxkj/ci-assets/Content ] && [ ! -e Unreal/CarlaUE4/Content ]; then
-            ln -sfn /home/yxkj/ci-assets/Content Unreal/CarlaUE4/Content
-            echo "复用 /home/yxkj/ci-assets/Content"
+          # Content（地图资源仓库）：优先用 ci-assets 里的官方完整版（git + LFS，约 88G）
+          CI_CONTENT=/home/yxkj/ci-assets/Content
+          if [ -d "$CI_CONTENT" ] && [ "$(readlink -f Unreal/CarlaUE4/Content 2>/dev/null)" != "$CI_CONTENT" ]; then
+            if [ -L Unreal/CarlaUE4/Content ]; then
+              rm -f Unreal/CarlaUE4/Content
+            elif [ -e Unreal/CarlaUE4/Content ]; then
+              mv Unreal/CarlaUE4/Content "Unreal/CarlaUE4/Content.bak_$(date +%s)" || true
+            fi
+            ln -sfn "$CI_CONTENT" Unreal/CarlaUE4/Content
+            echo "Content 已指向官方完整版: $CI_CONTENT"
           fi
           ls -l Build | head
           du -sh Build 2>/dev/null || true
@@ -330,6 +336,36 @@ jobs:
             sed -i 's|-RenderOffscreen --carla-rpc-port=3654|-RenderOffscreen -opengl --carla-rpc-port=3654|g' Util/BuildTools/Check.sh
           fi
           grep -n -- '-RenderOffscreen' Util/BuildTools/Check.sh | head -2
+
+          # 3.13 Check.sh 启动模拟器后立刻开始跑用例，第一个用例会抢跑：
+          #      "time-out of 120000ms while waiting for the simulator"
+          #      在 nohup 启动行之后插一个 RPC 端口就绪等待（最多 180 秒）
+          python3 - Util/BuildTools/Check.sh <<'PY'
+          import io, sys
+          p = sys.argv[1]
+          s = io.open(p, encoding='utf-8').read()
+          if '[hutb-ci] 等待 RPC' in s:
+              print('端口等待已存在，跳过')
+          else:
+              out, injected = [], False
+              for line in s.split('\n'):
+                  out.append(line)
+                  if (line.strip().startswith('nohup') and 'CarlaUE4.sh' in line
+                          and not injected):
+                      out += [
+                          '  # [hutb-ci] 等待 RPC 端口就绪，避免第一个用例抢跑超时',
+                          '  for _i in $(seq 1 90); do',
+                          '    (echo >/dev/tcp/127.0.0.1/3654) 2>/dev/null && break',
+                          '    sleep 2',
+                          '  done',
+                      ]
+                      injected = True
+              if injected:
+                  io.open(p, 'w', encoding='utf-8').write('\n'.join(out))
+                  print('端口等待已注入')
+              else:
+                  print('警告：未找到模拟器启动行')
+          PY
 
           echo "shim 就绪"
 
