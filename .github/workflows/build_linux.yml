@@ -422,10 +422,23 @@ jobs:
       - name: 10. 自动化测试（make check.*）
         run: |
           set -o pipefail
+          # 服务器上可能残留其他模拟器实例（比如直接跑二进制、不经 CarlaUE4.sh）。
+          # Check.sh 只会 fuser -k 3654 和 pkill "CarlaUE4.sh"，杀不到它们；
+          # 残留实例占着 2000 端口，会让新实例 bind: Address already in use 直接崩，所有用例超时。
+          cleanup_sim() {
+            pkill -f "CarlaUE4-Linux-Shipping" 2>/dev/null || true
+            sleep 2
+            fuser -k 2000/tcp 3654/tcp 2>/dev/null || true
+            sleep 1
+          }
           # 只测本次编出来的 Python 版本（上游默认 3.7~3.14 全跑，这里只建了 PY_VER 的 wheel）
+          cleanup_sim
           make check.PythonAPI ARGS="--python-version=${PY_VER}" 2>&1 | tee /tmp/ci_check_pythonapi.log
+          cleanup_sim
           make check.smoke     ARGS="--python-version=${PY_VER}" 2>&1 | tee /tmp/ci_check_smoke.log
+          cleanup_sim
           make check.vr        ARGS="--python-version=${PY_VER}" 2>&1 | tee /tmp/ci_check_vr.log
+          cleanup_sim
           make check.air       ARGS="--python-version=${PY_VER}" 2>&1 | tee /tmp/ci_check_air.log
 
       # ------------------------------------------------------------------
