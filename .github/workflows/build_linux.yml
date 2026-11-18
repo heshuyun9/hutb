@@ -57,6 +57,8 @@ jobs:
       # 安装前缀必须显式导出，否则 osm2odr 装到 /usr/local 无权限
       LIBCARLA_INSTALL_SERVER_FOLDER: ${{ github.workspace }}/Unreal/CarlaUE4/Plugins/Carla/CarlaDependencies
       LIBCARLA_INSTALL_CLIENT_FOLDER: ${{ github.workspace }}/PythonAPI/carla/dependencies
+      # Content 用 ci-assets 里的共享缓存，跳过对腾讯私有仓库的 git pull（匿名 404）
+      HUTB_CONTENT_CACHE: "1"
 
     steps:
       # ------------------------------------------------------------------
@@ -194,7 +196,9 @@ jobs:
                               lines[j].strip().startswith('git ')):
                           block.append(lines[j]); j += 1
                       if block:
-                          out.append(' if [ -d "$CONTENT_PATH/.git" ]; then')
+                          out.append(' if [ "${HUTB_CONTENT_CACHE:-0}" = "1" ]; then')
+                          out.append('   echo "  [hutb-ci] 使用共享 Content 缓存，跳过 git pull"')
+                          out.append(' elif [ -d "$CONTENT_PATH/.git" ]; then')
                           out.extend(block)
                           out.append(' else')
                           out.append('   echo "  [hutb-ci] Content 已存在但无 .git，跳过 git 拉取"')
