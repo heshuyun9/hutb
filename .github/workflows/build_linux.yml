@@ -354,8 +354,8 @@ jobs:
               out, injected = [], False
               for line in s.split('\n'):
                   out.append(line)
-                  if (line.strip().startswith('nohup') and 'CarlaUE4.sh' in line
-                          and not injected):
+                  if (line.strip().startswith('nohup')
+                          and 'carla-rpc-port=3654' in line):
                       out += [
                           '  # [hutb-ci] 等待 RPC 端口就绪，避免第一个用例抢跑超时',
                           '  for _i in $(seq 1 90); do',
