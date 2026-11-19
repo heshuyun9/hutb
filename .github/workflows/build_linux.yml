@@ -411,21 +411,20 @@ jobs:
                   print('警告：未找到模拟器启动行')
           PY
 
-          # 3.11 conda 走阿里云镜像：直连 repo.anaconda.com 会被 FastGithub 代理拦证书
+          # 3.11 conda 强制走官方源并直连（repo.anaconda.com 已在 no_proxy 中）
+          #      国内镜像（tuna/bfsu 403、aliyun 404）在这台机器上不可用
           cat > "$HOME/.condarc" <<'EOF'
           channels:
-            - https://mirrors.aliyun.com/anaconda/pkgs/main
-            - https://mirrors.aliyun.com/anaconda/pkgs/r
-            - https://mirrors.aliyun.com/anaconda/cloud/conda-forge
+            - defaults
           default_channels:
-            - https://mirrors.aliyun.com/anaconda/pkgs/main
-            - https://mirrors.aliyun.com/anaconda/pkgs/r
+            - https://repo.anaconda.com/pkgs/main
+            - https://repo.anaconda.com/pkgs/r
           show_channel_urls: true
           remote_read_timeout_secs: 120
           remote_connect_timeout_secs: 30
           remote_max_retries: 5
           EOF
-          echo "condarc 已写入: $(head -2 "$HOME/.condarc" | tail -1)"
+          echo "condarc 已写入"
 
           echo "shim 就绪"
 
