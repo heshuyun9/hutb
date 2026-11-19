@@ -52,7 +52,7 @@ jobs:
       http_proxy: http://127.0.0.1:38457
       https_proxy: http://127.0.0.1:38457
       # 但 pip / pypi 必须直连：FastGithub 只转发 GitHub，走代理会 404/403
-      no_proxy: localhost,127.0.0.1,pypi.org,files.pythonhosted.org,mirrors.aliyun.com,git.code.tencent.com
+      no_proxy: localhost,127.0.0.1,pypi.org,files.pythonhosted.org,mirrors.aliyun.com,git.code.tencent.com,repo.anaconda.com,conda.anaconda.org
       PIP_INDEX_URL: https://mirrors.aliyun.com/pypi/simple
       PIP_TRUSTED_HOST: mirrors.aliyun.com
       PIP_DEFAULT_TIMEOUT: "120"
@@ -410,6 +410,22 @@ jobs:
               else:
                   print('警告：未找到模拟器启动行')
           PY
+
+          # 3.11 conda 走阿里云镜像：直连 repo.anaconda.com 会被 FastGithub 代理拦证书
+          cat > "$HOME/.condarc" <<'EOF'
+          channels:
+            - https://mirrors.aliyun.com/anaconda/pkgs/main
+            - https://mirrors.aliyun.com/anaconda/pkgs/r
+            - https://mirrors.aliyun.com/anaconda/cloud/conda-forge
+          default_channels:
+            - https://mirrors.aliyun.com/anaconda/pkgs/main
+            - https://mirrors.aliyun.com/anaconda/pkgs/r
+          show_channel_urls: true
+          remote_read_timeout_secs: 120
+          remote_connect_timeout_secs: 30
+          remote_max_retries: 5
+          EOF
+          echo "condarc 已写入: $(head -2 "$HOME/.condarc" | tail -1)"
 
           echo "shim 就绪"
 
