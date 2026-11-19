@@ -146,13 +146,14 @@ jobs:
 
           # 资源完整性体检：fast 防止缓存损坏；full 防止"下载了但没拉全"
           test -d "$CI_CONTENT/.git" || { echo "Content 不是 git 仓库"; exit 1; }
-          SIZE_G=$(du -sg "$CI_CONTENT" | cut -f1)
+          # 注意：这台机器的 du 不支持 -g，只能用 -m（MB）
+          SIZE_MB=$(du -sm "$CI_CONTENT" 2>/dev/null | cut -f1)
           POINTER=$(grep -l "git-lfs.github.com/spec/v1" "$CI_CONTENT"/Carla/Maps/*.umap 2>/dev/null | wc -l | tr -d ' ')
           TOWN_SIZE=$(stat -c%s "$CI_CONTENT/Carla/Maps/Town10HD.umap" 2>/dev/null || echo 0)
-          echo "[content] 大小 ${SIZE_G}G，LFS 指针 ${POINTER} 个，Town10HD ${TOWN_SIZE} 字节"
-          [ "$SIZE_G" -ge 60 ]           || { echo "Content 不完整：只有 ${SIZE_G}G"; exit 1; }
-          [ "$POINTER" -eq 0 ]           || { echo "$POINTER 个地图还是 LFS 指针，未拉取实体文件"; exit 1; }
-          [ "$TOWN_SIZE" -ge 1000000 ]   || { echo "Town10HD.umap 异常：${TOWN_SIZE} 字节"; exit 1; }
+          echo "[content] 大小 ${SIZE_MB:-未知}MB，LFS 指针 ${POINTER} 个，Town10HD ${TOWN_SIZE} 字节"
+          [ "${SIZE_MB:-0}" -ge 60000 ] || { echo "Content 不完整：只有 ${SIZE_MB:-0}MB"; exit 1; }
+          [ "$POINTER" -eq 0 ]          || { echo "$POINTER 个地图还是 LFS 指针，未拉取实体文件"; exit 1; }
+          [ "$TOWN_SIZE" -ge 1000000 ]  || { echo "Town10HD.umap 异常：${TOWN_SIZE} 字节"; exit 1; }
 
           ls -l Build | head
           du -sh Build 2>/dev/null || true
