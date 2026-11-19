@@ -52,7 +52,7 @@ jobs:
       http_proxy: http://127.0.0.1:38457
       https_proxy: http://127.0.0.1:38457
       # 但 pip / pypi 必须直连：FastGithub 只转发 GitHub，走代理会 404/403
-      no_proxy: localhost,127.0.0.1,pypi.org,files.pythonhosted.org,mirrors.aliyun.com
+      no_proxy: localhost,127.0.0.1,pypi.org,files.pythonhosted.org,mirrors.aliyun.com,git.code.tencent.com
       PIP_INDEX_URL: https://mirrors.aliyun.com/pypi/simple
       PIP_TRUSTED_HOST: mirrors.aliyun.com
       PIP_DEFAULT_TIMEOUT: "120"
@@ -118,16 +118,11 @@ jobs:
           fi
 
           if [ "$MODE" = "full" ]; then
-            # 全量：不复用依赖缓存，交给 Step 4 的 ./setup.sh 从零下载安装
-            # 但 prerequisites（Miniconda）是工具链本身，不是编译产物；删掉会让 setup.sh 直接报错。
-            # 用软链复用（保留原始绝对路径，conda env 才不会失效）。
+            # 全量：必须让 Build/dependencies 不存在，setup.sh 才会 git clone dependencies_u
+            # （离线包 boost/xerces/proj 等、Miniconda 安装包都在那个仓库里；
+            #  若提前建目录或留软链，setup.sh 会跳过 clone，随后 boost 只能走外网 → 404）
             rm -rf Build/dependencies
-            mkdir -p Build/dependencies
-            if [ -d /home/yxkj/hutb/Build/dependencies/prerequisites ]; then
-              ln -sfn /home/yxkj/hutb/Build/dependencies/prerequisites Build/dependencies/prerequisites
-              echo "[full] prerequisites 已软链到共享 miniconda"
-            fi
-            echo "[full] 已删除工作区 dependencies，setup.sh 将从零下载"
+            echo "[full] 已删除 dependencies，setup.sh 将从 dependencies_u 仓库从零安装"
           else
             # 依赖缓存：统一指向 ~/hutb/Build/dependencies（miniconda 等已按 yxkj 用户路径装好；
             # 工作区里若残留别人建的 dependencies，其 miniconda 路径是 /home/ubuntu，必然 Permission denied）
