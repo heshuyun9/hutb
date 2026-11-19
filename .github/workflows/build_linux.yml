@@ -171,9 +171,22 @@ jobs:
           rm -rf Unreal/CarlaUE4/Intermediate
           rm -rf PythonAPI/carla/build PythonAPI/carla/dist
           # 与上游 build_linux.yml 的 "Fix Windows Compiler Flags and Clean Cache" 一致：
-          # 清掉被污染的引擎 Intermediate，并让 UBT 重新生成
+          # 清掉被污染的引擎 Intermediate。
+          # 注意：不要删 UnrealBuildTool.exe —— 它是引擎自带工具（不是本项目产物），
+          # 删了这台引擎上 mono 就找不到 UBT，且 xbuild 重建产物在 obj/ 下不会自动回填。
           rm -rf "$UE4_ROOT/Engine/Intermediate/Build/Linux/B4D820EA"
-          rm -f "$UE4_ROOT/Engine/Binaries/DotNET/UnrealBuildTool.exe"
+          # 防御：若 UBT 已被历史版本删掉，从 obj/ 里的构建产物补回
+          if [ ! -f "$UE4_ROOT/Engine/Binaries/DotNET/UnrealBuildTool.exe" ]; then
+            UBT_OBJ="$UE4_ROOT/Engine/Source/Programs/UnrealBuildTool/obj/Development/UnrealBuildTool.exe"
+            if [ -f "$UBT_OBJ" ]; then
+              cp -f "$UBT_OBJ" "$UE4_ROOT/Engine/Binaries/DotNET/"
+              cp -f "${UBT_OBJ}.mdb" "$UE4_ROOT/Engine/Binaries/DotNET/" 2>/dev/null || true
+              echo "[full] 已从 obj/ 恢复 UnrealBuildTool.exe"
+            else
+              echo "错误：UnrealBuildTool.exe 缺失且无 obj 备份"
+              exit 1
+            fi
+          fi
           df -h "$GITHUB_WORKSPACE" | tail -1
 
       # ------------------------------------------------------------------
