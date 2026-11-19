@@ -18,6 +18,11 @@ on:
         description: "只构建一个 Python 版本的 wheel / 只测这个版本（3.10 = 服务器 venv-carla）"
         required: false
         default: "3.10"
+      refresh_content:
+        description: "是否重新下载 88G 地图资源（Content），默认复用缓存；发版前可打开验证下载链路"
+        type: choice
+        options: ["false", "true"]
+        default: "false"
   schedule:
     # 每周全量重建一次：每周一 02:00（北京时间）= 周日 18:00 UTC
     - cron: '0 18 * * 0'
@@ -40,6 +45,8 @@ jobs:
       UPLOAD: ${{ inputs.upload || 'false' }}
       # 本次只构建/只测试的 Python 版本（上游默认 3.7~3.14 全跑）
       PY_VER: ${{ inputs.python_version || '3.10' }}
+      # 是否重下 88G 地图资源；默认复用 ci-assets 缓存
+      REFRESH_CONTENT: ${{ inputs.refresh_content || 'false' }}
       UE4_ROOT: /home/yxkj/UnrealEngine_4.26
       # GitHub 走本地 FastGithub 代理（大仓库直连会 curl 28 超时）
       http_proxy: http://127.0.0.1:38457
@@ -86,10 +93,30 @@ jobs:
           submodules: false
 
       # ------------------------------------------------------------------
-      - name: 2. 依赖与 Content 缓存策略（fast 复用 / full 丢弃）
+      - name: 2. 依赖与 Content 缓存策略（fast 复用 / full 重下）
         run: |
           set -e
           mkdir -p Build
+          CI_CONTENT=/home/yxkj/ci-assets/Content
+
+          # 地图资源：full 模式默认重下（真全量）；fast 想重下把 refresh_content 选 true
+          if [ "$MODE" = "full" ] || [ "$REFRESH_CONTENT" = "true" ]; then
+            echo "[content] 删除旧资源，重新 clone + git lfs pull（约 88G）"
+            rm -rf "$CI_CONTENT"
+            mkdir -p /home/yxkj/ci-assets
+            (
+              # 腾讯工蜂直连，不能走 FastGithub 代理
+              unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
+              git clone --depth 1 \
+                "https://OpenHUTB:T8w6TYB_r71gGTP3A02B@git.code.tencent.com/OpenHUTB/Content.git" \
+                "$CI_CONTENT"
+              cd "$CI_CONTENT"
+              git lfs pull || echo "[content] lfs pull 有报错，交给下面的完整性检查判定"
+            )
+            # Update.sh 靠 Content/Carla/.git 判断是否需要从 S3 重下，补一个标记
+            mkdir -p "$CI_CONTENT/Carla/.git"
+          fi
+
           if [ "$MODE" = "full" ]; then
             # 全量：不复用依赖缓存，交给 Step 4 的 ./setup.sh 从零下载安装
             rm -rf Build/dependencies
@@ -106,17 +133,27 @@ jobs:
               echo "替换掉旧 dependencies 目录为软链"
             fi
           fi
-          # Content（地图资源仓库）：优先用 ci-assets 里的官方完整版（git + LFS，约 88G）
-          CI_CONTENT=/home/yxkj/ci-assets/Content
-          if [ -d "$CI_CONTENT" ] && [ "$(readlink -f Unreal/CarlaUE4/Content 2>/dev/null)" != "$CI_CONTENT" ]; then
+          # Content 指向 ci-assets 里的完整版
+          if [ "$(readlink -f Unreal/CarlaUE4/Content 2>/dev/null)" != "$CI_CONTENT" ]; then
             if [ -L Unreal/CarlaUE4/Content ]; then
               rm -f Unreal/CarlaUE4/Content
             elif [ -e Unreal/CarlaUE4/Content ]; then
               mv Unreal/CarlaUE4/Content "Unreal/CarlaUE4/Content.bak_$(date +%s)" || true
             fi
             ln -sfn "$CI_CONTENT" Unreal/CarlaUE4/Content
-            echo "Content 已指向官方完整版: $CI_CONTENT"
+            echo "Content 已指向: $CI_CONTENT"
           fi
+
+          # 资源完整性体检：fast 防止缓存损坏；full 防止"下载了但没拉全"
+          test -d "$CI_CONTENT/.git" || { echo "Content 不是 git 仓库"; exit 1; }
+          SIZE_G=$(du -sg "$CI_CONTENT" | cut -f1)
+          POINTER=$(grep -l "git-lfs.github.com/spec/v1" "$CI_CONTENT"/Carla/Maps/*.umap 2>/dev/null | wc -l | tr -d ' ')
+          TOWN_SIZE=$(stat -c%s "$CI_CONTENT/Carla/Maps/Town10HD.umap" 2>/dev/null || echo 0)
+          echo "[content] 大小 ${SIZE_G}G，LFS 指针 ${POINTER} 个，Town10HD ${TOWN_SIZE} 字节"
+          [ "$SIZE_G" -ge 60 ]           || { echo "Content 不完整：只有 ${SIZE_G}G"; exit 1; }
+          [ "$POINTER" -eq 0 ]           || { echo "$POINTER 个地图还是 LFS 指针，未拉取实体文件"; exit 1; }
+          [ "$TOWN_SIZE" -ge 1000000 ]   || { echo "Town10HD.umap 异常：${TOWN_SIZE} 字节"; exit 1; }
+
           ls -l Build | head
           du -sh Build 2>/dev/null || true
 
