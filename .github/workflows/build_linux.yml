@@ -445,21 +445,20 @@ jobs:
       - name: 4. setup（下载依赖 + 生成 CMake 配置）
         run: |
           set -o pipefail
+          # AirSim 源码缓存：两种模式都用。GitHub 大仓库经常被代理重置（RPC failed / EOF），
+          # 它只是第三方源码，不属于"本项目的编译产物"，全量时仍然重新编译 AirLib。
+          export CACHE_DIR=/home/yxkj/ci-assets
+          # 缓存里不能带上一次的编译产物：CMakeCache.txt 里写死了旧的绝对路径，
+          # 换到 CI 工作区会被 cmake 判定目录不一致直接失败
+          rm -rf "$CACHE_DIR/AirSim/build_release" "$CACHE_DIR/AirSim/build_debug" "$CACHE_DIR/AirSim/cmake_build"
+          rm -f "$CACHE_DIR/AirSim/cmake/CMakeCache.txt"
+          rm -rf "$CACHE_DIR/AirSim/cmake/CMakeFiles"
+          echo "AirSim 源码缓存 -> $CACHE_DIR/AirSim"
           # 全量模式：与上游一致，先跑仓库自带的 ./setup.sh（clone dependencies_u、安装 miniconda/apt 依赖）
           # 对应老师说的 "UE4 和下载依赖都重新开始"
           if [ "$MODE" = "full" ]; then
             echo "[full] 执行 ./setup.sh 从零准备依赖"
             ./setup.sh 2>&1 | tee /tmp/ci_setup_sh.log
-          else
-            # fast：复用服务器上的 AirSim 源码缓存。BuildUE4Plugins.sh 会优先
-            # cp -a "$CACHE_DIR/AirSim"，避免每次从 GitHub clone（大仓库经常被代理重置/卡死）
-            export CACHE_DIR=/home/yxkj/ci-assets
-            # 缓存里不能带上一次的编译产物：CMakeCache.txt 里写死了旧的绝对路径，
-            # 换到 CI 工作区会被 cmake 判定目录不一致直接失败
-            rm -rf "$CACHE_DIR/AirSim/build_release" "$CACHE_DIR/AirSim/build_debug" "$CACHE_DIR/AirSim/cmake_build"
-            rm -f "$CACHE_DIR/AirSim/cmake/CMakeCache.txt"
-            rm -rf "$CACHE_DIR/AirSim/cmake/CMakeFiles"
-            echo "[fast] AirSim 源码缓存 -> $CACHE_DIR/AirSim"
           fi
           # 清掉旧的 AirSim 构建目录，强制用 Step 3.10 打补丁后的工具链重编 AirLib
           rm -rf Build/AirSim
