@@ -56,11 +56,11 @@ jobs:
       PIP_INDEX_URL: https://mirrors.aliyun.com/pypi/simple
       PIP_TRUSTED_HOST: mirrors.aliyun.com
       PIP_DEFAULT_TIMEOUT: "120"
-      # wheel 链接改用系统 clang++（UE4 自带的旧 ld 读不了新版 glibc 的 .relr.dyn）
-      LDSHARED: "/usr/bin/clang++ -shared"
-      LDCXXSHARED: "/usr/bin/clang++ -shared"
-      # UE4 自带 Mono 目录不完整（缺 bin），强制用系统 mono，否则 RunUAT 报 AutomationTool failed to compile
-      UE_USE_SYSTEM_MONO: "1"
+      # wheel 链接用 UE4 自带 clang++（不再依赖系统 clang）：
+      # 引擎自带的旧 ld 读不了新版 glibc 的 .relr.dyn，必须配合引擎里的 ld.lld
+      LDSHARED: "/home/yxkj/UnrealEngine_4.26/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/v17_clang-10.0.1-centos7/x86_64-unknown-linux-gnu/bin/clang++ -shared -fuse-ld=lld"
+      LDCXXSHARED: "/home/yxkj/UnrealEngine_4.26/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/v17_clang-10.0.1-centos7/x86_64-unknown-linux-gnu/bin/clang++ -shared -fuse-ld=lld"
+      # Mono 不再强制系统版：第 3 步按「依赖库 > 引擎自带 > 系统」依次选择
       # 安装前缀必须显式导出，否则 osm2odr 装到 /usr/local 无权限
       LIBCARLA_INSTALL_SERVER_FOLDER: ${{ github.workspace }}/Unreal/CarlaUE4/Plugins/Carla/CarlaDependencies
       LIBCARLA_INSTALL_CLIENT_FOLDER: ${{ github.workspace }}/PythonAPI/carla/dependencies
@@ -77,8 +77,8 @@ jobs:
           test -d "$UE4_ROOT/Engine" || { echo "UE4_ROOT 不存在: $UE4_ROOT"; exit 1; }
           ls "$UE4_ROOT/Engine/Binaries/Linux/UE4Editor" >/dev/null
           nvidia-smi --query-gpu=name,memory.total --format=csv || true
-          mono --version | head -1
-          /usr/bin/clang++ --version | head -1
+          mono --version 2>/dev/null | head -1 || echo "系统无 mono"
+          "$UE4_ROOT/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/v17_clang-10.0.1-centos7/x86_64-unknown-linux-gnu/bin/clang++" --version | head -1
           echo "MODE=$MODE UPLOAD=$UPLOAD PY_VER=$PY_VER"
           # 清掉上次构建残留的锁
           rm -rf /tmp/hutb-*.lock 2>/dev/null || true
@@ -195,39 +195,65 @@ jobs:
           set -e
           UE4_BIN="$UE4_ROOT/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/v17_clang-10.0.1-centos7/x86_64-unknown-linux-gnu/bin"
 
-          # 3.1 编译器包装：过滤 Python3.10 sysconfig 带来的、clang10 不认识的参数
-          cat > /tmp/hutb-clang-wrap.sh <<EOF
+          # 3.0 Mono：依赖库 > 引擎自带 > 系统（老师要求尽量不用系统组件）
+          ENGINE_MONO="$UE4_ROOT/Engine/Binaries/ThirdParty/Mono/Linux"
+          MONO_HOME="${MONO_HOME:-/home/yxkj/ci-assets/mono}"   # 依赖库落地目录（TODO: 改由 dependencies_u 收录）
+          if [ -x "$MONO_HOME/bin/mono" ]; then
+            echo "[mono] 使用依赖库 mono: $MONO_HOME -> $ENGINE_MONO"
+            mkdir -p "$ENGINE_MONO"
+            for d in bin etc lib x86_64-unknown-linux-gnu; do
+              [ -d "$MONO_HOME/$d" ] || continue
+              mkdir -p "$ENGINE_MONO/$d"
+              cp -a "$MONO_HOME/$d/." "$ENGINE_MONO/$d/"
+            done
+            chmod +x "$ENGINE_MONO"/bin/* 2>/dev/null || true
+            echo "UE_USE_SYSTEM_MONO=0" >> "$GITHUB_ENV"
+          elif [ -x "$ENGINE_MONO/bin/mono" ]; then
+            echo "[mono] 使用引擎自带 mono: $ENGINE_MONO"
+            echo "UE_USE_SYSTEM_MONO=0" >> "$GITHUB_ENV"
+          else
+            echo "::warning::依赖库与引擎都没有可用 mono，暂时回落系统 mono（TODO: dependencies_u 收录 mono）"
+            echo "UE_USE_SYSTEM_MONO=1" >> "$GITHUB_ENV"
+          fi
+
+          # 3.1 编译器包装：直接顶替引擎自带 clang/clang++，UBT 与 Python 扩展都自动走这里
+          #     只丢弃 Linux clang 不认识的参数；仓库源码（含 Target.cs）一律不改
+          make_wrapper() {
+            name="$1"; real="$UE4_BIN/${name}.real"
+            if [ ! -f "$real" ]; then
+              cp -f "$(readlink -f "$UE4_BIN/$name")" "$real"
+              chmod +x "$real"
+            fi
+            cat > "$UE4_BIN/$name" <<EOF
           #!/bin/bash
-          REAL="$UE4_BIN/clang"
+          # hutb-ci wrapper
           args=()
           for a in "\$@"; do
             case "\$a" in
               -fstack-clash-protection) ;;
               -mno-omit-leaf-frame-pointer) ;;
+              /wd4103|-wd4103) ;;          # MSVC 专用警告开关，Linux clang 不认
               *) args+=("\$a") ;;
             esac
           done
-          exec "\$REAL" "\${args[@]}"
+          exec -a "$name" "$real" "\${args[@]}"
           EOF
-          cat > /tmp/hutb-clangxx-wrap.sh <<EOF
-          #!/bin/bash
-          REAL="$UE4_BIN/clang++"
-          args=()
-          for a in "\$@"; do
-            case "\$a" in
-              -fstack-clash-protection) ;;
-              -mno-omit-leaf-frame-pointer) ;;
-              *) args+=("\$a");;
-            esac
+            chmod +x "$UE4_BIN/$name"
+          }
+          for c in clang clang++; do
+            if grep -q 'hutb-ci wrapper' "$UE4_BIN/$c" 2>/dev/null; then
+              echo "[wrap] $c 已是 CI 包装，跳过"
+            else
+              make_wrapper "$c"
+              echo "[wrap] $c 已替换为包装"
+            fi
           done
-          exec "\$REAL" "\${args[@]}"
-          EOF
-          chmod +x /tmp/hutb-clang-wrap.sh /tmp/hutb-clangxx-wrap.sh
+          "$UE4_BIN/clang++" --version | head -1
 
-          # 3.2 BuildPythonAPI.sh：CC/CXX 指向包装
+          # 3.2 BuildPythonAPI.sh：CC/CXX 指向引擎 clang（已被 3.1 包装）
           API_SH=Util/BuildTools/BuildPythonAPI.sh
-          grep -q 'hutb-clang-wrap' "$API_SH" || \
-            sed -i 's|^export CC=.*|export CC="/tmp/hutb-clang-wrap.sh"|; s|^export CXX=.*|export CXX="/tmp/hutb-clangxx-wrap.sh"|' "$API_SH"
+          grep -q "$UE4_BIN/clang" "$API_SH" || \
+            sed -i "s|^export CC=.*|export CC=\"$UE4_BIN/clang\"|; s|^export CXX=.*|export CXX=\"$UE4_BIN/clang++\"|" "$API_SH"
           grep -n 'export CC=\|export CXX=' "$API_SH" | head -2
 
           # 3.3 BuildUE4Plugins.sh：Content 已存在但不是独立 git 仓库时，不能再 git reset
@@ -321,12 +347,8 @@ jobs:
             sed -i 's|/home/ubuntu/UnrealEngine_4.26|/home/yxkj/UnrealEngine_4.26|g' "$f"
           done
 
-          # 3.9 Target.cs 里的 /wd4103 是 MSVC 专用参数，Linux clang 会把它拼到 -MF 后面
-          #     变成 ".../xxx.cpp.d/wd4103" 从而报 "No such file or directory"
-          for f in Unreal/CarlaUE4/Source/CarlaUE4.Target.cs Unreal/CarlaUE4/Source/CarlaUE4Editor.Target.cs; do
-            [ -f "$f" ] && sed -i 's|^\(\s*\)AdditionalCompilerArguments = "/wd4103";|\1AdditionalCompilerArguments = "";|' "$f"
-            [ -f "$f" ] && grep -n 'AdditionalCompilerArguments' "$f"
-          done
+          # 3.9 /wd4103 已由 3.1 的 clang 包装统一丢弃，这里不再改 Target.cs
+          #     （Target.cs 是跨平台共用文件，改动会影响 Windows/20.04，须其他系统验证后才允许改）
 
           # 3.10 AirSim 的 setup.sh 把 CC/CXX 写死成 /usr/bin/gcc(g++)，导致 libAirLib.a
           #      用 libstdc++(std::__cxx11) 编出来，与插件本体 libc++(std::__1) ABI 不兼容。
