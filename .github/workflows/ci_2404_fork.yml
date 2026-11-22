@@ -1,0 +1,121 @@
+name: ci-2404-fork
+
+# 仅用于 fork 自测：把 PR 里 linux-dev-2404 的步骤原样搬到 fork 的 runner 上跑，
+# 不参与社区 PR；验证通过后本文件不会进入 PR。
+on:
+  push:
+    branches: [ci-24.04]
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [fast, full]
+        default: full
+
+jobs:
+  build-2404:
+    name: Linux CI/CD (Ubuntu 24.04, fork)
+    timeout-minutes: 1440
+    runs-on: [self-hosted, linux, yxkj-hutb]
+    env:
+      UE4_ROOT: /home/yxkj/UnrealEngine_4.26
+      MODE: ${{ inputs.mode || 'full' }}
+      UPLOAD: "false"
+      PY_VER: "3.10"
+      LDSHARED: "/home/yxkj/UnrealEngine_4.26/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/v17_clang-10.0.1-centos7/x86_64-unknown-linux-gnu/bin/clang++ -shared -fuse-ld=lld"
+      LDCXXSHARED: "/home/yxkj/UnrealEngine_4.26/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/v17_clang-10.0.1-centos7/x86_64-unknown-linux-gnu/bin/clang++ -shared -fuse-ld=lld"
+      LIBCARLA_INSTALL_SERVER_FOLDER: ${{ github.workspace }}/Unreal/CarlaUE4/Plugins/Carla/CarlaDependencies
+      LIBCARLA_INSTALL_CLIENT_FOLDER: ${{ github.workspace }}/PythonAPI/carla/dependencies
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: 24.04 工具链适配
+        run: bash .github/scripts/ci_2404_shim.sh
+        shell: bash
+
+      - name: 依赖与资源（full 时清空重建）
+        run: |
+          set -e
+          if [ "$MODE" = "full" ]; then
+            echo "[full] 清空依赖与构建产物（含已编译的 install 目录，确保从零验证）"
+            rm -rf Build/dependencies Build/AirSim Build/LibCarla Build/UE4Carla
+            rm -rf Build/*-source Build/*-src Build/*-install Build/*-install-server
+            rm -rf Unreal/CarlaUE4/Intermediate
+            rm -rf "$UE4_ROOT/Engine/Intermediate/Build/Linux/B4D820EA"
+          fi
+          CI_CONTENT=/home/yxkj/ci-assets/Content
+          if [ -d "$CI_CONTENT/.git" ] && [ "$(readlink -f Unreal/CarlaUE4/Content 2>/dev/null)" != "$CI_CONTENT" ]; then
+            rm -rf Unreal/CarlaUE4/Content
+            ln -sfn "$CI_CONTENT" Unreal/CarlaUE4/Content
+          fi
+        shell: bash
+
+      - name: setup
+        run: |
+          set -o pipefail
+          git update-index --skip-worktree Unreal/CarlaUE4/CarlaUE4.uproject || true
+          ./setup.sh 2>&1 | tee /tmp/ci_setup_sh.log
+          make setup ARGS="--chrono" 2>&1 | tee /tmp/ci_setup.log
+        shell: bash
+
+      - name: AirSim 适配（setup 之后）
+        run: bash .github/scripts/ci_2404_shim.sh --after-setup
+        shell: bash
+
+      - name: retrieve content
+        run: |
+          set -o pipefail
+          if [ -x Update.sh ]; then ./Update.sh 2>&1 | tee /tmp/ci_update.log; else echo "无 Update.sh，跳过"; fi
+        shell: bash
+
+      - name: 清理引擎中间缓存
+        run: |
+          set -e
+          rm -rf "$UE4_ROOT/Engine/Intermediate/Build/Linux/B4D820EA"
+          rm -rf "$GITHUB_WORKSPACE/Unreal/CarlaUE4/Intermediate"
+        shell: bash
+
+      - name: CarlaUE4Editor
+        run: |
+          set -o pipefail
+          mkdir -p Build/zlib-include
+          cp -f /usr/include/zlib.h /usr/include/zconf.h Build/zlib-include/ 2>/dev/null || true
+          export CPATH="$PWD/Build/zlib-include${CPATH:+:$CPATH}"
+          rm -rf Build/LibCarla Build/LibCppToolChain.cmake
+          make CarlaUE4Editor ARGS="--chrono" 2>&1 | tee /tmp/ci_editor.log
+        shell: bash
+
+      - name: 构建 PythonAPI wheel
+        run: |
+          set -o pipefail
+          make PythonAPI.wheel ARGS="--python-version=${PY_VER}" 2>&1 | tee /tmp/ci_wheel.log
+          ls -lh PythonAPI/carla/dist/
+        shell: bash
+
+      - name: package
+        run: |
+          set -o pipefail
+          taskset -c 0-5 bash Util/BuildTools/Package.sh --no-zip 2>&1 | tee /tmp/ci_package.log
+        shell: bash
+
+      - name: check
+        run: |
+          set -o pipefail
+          cleanup_sim() {
+            pkill -f "CarlaUE4-Linux-Shipping" 2>/dev/null || true
+            sleep 2
+            fuser -k 2000/tcp 3654/tcp 2>/dev/null || true
+            sleep 1
+          }
+          cleanup_sim
+          make check.PythonAPI ARGS="--python-version=${PY_VER}" 2>&1 | tee /tmp/ci_check_pythonapi.log
+          cleanup_sim
+          make check.smoke ARGS="--python-version=${PY_VER}" 2>&1 | tee /tmp/ci_check_smoke.log
+          cleanup_sim
+          make check.vr ARGS="--python-version=${PY_VER}" 2>&1 | tee /tmp/ci_check_vr.log
+          cleanup_sim
+          make check.air ARGS="--python-version=${PY_VER}" 2>&1 | tee /tmp/ci_check_air.log
+        shell: bash
