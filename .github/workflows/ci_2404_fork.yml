@@ -4,7 +4,7 @@ name: ci-2404-fork
 # 不参与社区 PR；验证通过后本文件不会进入 PR。
 on:
   push:
-    branches: [ci-24.04]
+    branches: [ci-24.04, ci-2404-test]
   workflow_dispatch:
     inputs:
       mode:
