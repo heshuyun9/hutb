@@ -45,11 +45,16 @@ jobs:
             rm -rf Build/*-source Build/*-src Build/*-install Build/*-install-server
             rm -rf Unreal/CarlaUE4/Intermediate
             rm -rf "$UE4_ROOT/Engine/Intermediate/Build/Linux/B4D820EA"
-          fi
-          CI_CONTENT=/home/yxkj/ci-assets/Content
-          if [ -d "$CI_CONTENT/.git" ] && [ "$(readlink -f Unreal/CarlaUE4/Content 2>/dev/null)" != "$CI_CONTENT" ]; then
-            rm -rf Unreal/CarlaUE4/Content
-            ln -sfn "$CI_CONTENT" Unreal/CarlaUE4/Content
+            # full 连地图资源也重新下载：只删软链，共享缓存本体保留
+            rm -f Unreal/CarlaUE4/Content
+            echo "[full] Content 将由 Update.sh 重新下载"
+          else
+            CI_CONTENT=/home/yxkj/ci-assets/Content
+            if [ -d "$CI_CONTENT/.git" ] && [ "$(readlink -f Unreal/CarlaUE4/Content 2>/dev/null)" != "$CI_CONTENT" ]; then
+              rm -rf Unreal/CarlaUE4/Content
+              ln -sfn "$CI_CONTENT" Unreal/CarlaUE4/Content
+              echo "[fast] Content -> $CI_CONTENT"
+            fi
           fi
         shell: bash
 

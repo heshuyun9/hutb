@@ -134,6 +134,17 @@ for c in clang clang++; do
     echo "[wrap] $c 已替换为包装"
   fi
 done
+
+# 3.2 引擎自带的 ld（bfd 2.30）读不了 Ubuntu 24.04 glibc 的 .relr.dyn，
+# 直接把引擎目录里的 ld 换成它自带的 lld。这样所有用引擎 clang 的链接都走 lld，
+# 不必在每个构建脚本里单独加 -fuse-ld=lld（UBT 编译带 -Werror，加错地方会直接失败）。
+if [ ! -e "$UE4_BIN/x86_64-unknown-linux-gnu-ld.bfd.real" ]; then
+  cp -f "$UE4_BIN/x86_64-unknown-linux-gnu-ld" "$UE4_BIN/x86_64-unknown-linux-gnu-ld.bfd.real" 2>/dev/null || true
+  ln -sfn "$UE4_BIN/ld.lld" "$UE4_BIN/x86_64-unknown-linux-gnu-ld"
+  echo "[ld] 引擎 ld -> ld.lld"
+else
+  echo "[ld] 已是 ld.lld，跳过"
+fi
 "$UE4_BIN/clang++" --version | head -1
 
 # ---------------------------------------------------------------------------
@@ -355,11 +366,10 @@ else:
     s = s.replace('unset LLVM_LIBPATH', 'export LLVM_LIBPATH=%s' % lib)
     s = s.replace('export CXXFLAGS="-std=c++11 -stdlib=libstdc++"',
                   'export CXXFLAGS="-std=c++11 -stdlib=libc++ -isystem %s --sysroot=%s"  # [hutb-ci] osm2odr' % (inc, sdk))
-    # 24.04 的 glibc 用 .relr.dyn，引擎自带旧 ld 读不了；osm2odr 的 cmake 自检链接也要用 lld
     s = s.replace('export LDFLAGS="-stdlib=libstdc++"',
-                  'export LDFLAGS="-stdlib=libc++ -fuse-ld=lld -L%s --sysroot=%s"' % (lib, sdk))
+                  'export LDFLAGS="-stdlib=libc++ -L%s --sysroot=%s"' % (lib, sdk))
     s = s.replace('-DCMAKE_CXX_FLAGS="-fPIC -std=c++14 -stdlib=libc++"',
-                  '-DCMAKE_CXX_FLAGS="-fPIC -std=c++14 -stdlib=libc++ -fuse-ld=lld -isystem %s --sysroot=%s"' % (inc, sdk))
+                  '-DCMAKE_CXX_FLAGS="-fPIC -std=c++14 -stdlib=libc++ -isystem %s --sysroot=%s"' % (inc, sdk))
     io.open(p, 'w', encoding='utf-8').write(s)
     print('osm2odr 补丁已写入')
 PY
