@@ -98,10 +98,11 @@ make_wrapper() {
   fi
   cat > "$UE4_BIN/$name" <<EOF
 #!/bin/bash
-# hutb-ci wrapper v3
+# hutb-ci wrapper v4
 # UBT 通过 @rsp 传参，/wd4103 会粘在 -MF 参数尾部（...cpp.d/wd4103），
-# 所以既要过滤命令行参数，也要清洗响应文件
-# 另外：24.04 的 glibc 用 .relr.dyn，引擎自带旧 ld 读不了，链接统一改用 lld
+# 所以既要过滤命令行参数，也要清洗响应文件。
+# 注意：不要在这里加 -fuse-ld=lld —— UBT 编译时带 -Werror，
+# 未链接的编译命令会因 "argument unused" 直接失败；UBT 自己链接时已用 lld。
 args=()
 for a in "\$@"; do
   case "\$a" in
@@ -121,19 +122,12 @@ for a in "\$@"; do
     *) args+=("\$a") ;;
   esac
 done
-link=1
-for a in "\${args[@]}"; do
-  case "\$a" in
-    -c|-E|-S|-M|-MM|-MMD|-MD) link=0 ;;
-  esac
-done
-[ "\$link" = 1 ] && args+=("-fuse-ld=lld")
 exec -a "$name" "$real" "\${args[@]}"
 EOF
   chmod +x "$UE4_BIN/$name"
 }
 for c in clang clang++; do
-  if grep -q 'hutb-ci wrapper v3' "$UE4_BIN/$c" 2>/dev/null; then
+  if grep -q 'hutb-ci wrapper v4' "$UE4_BIN/$c" 2>/dev/null; then
     echo "[wrap] $c 已是 CI 包装，跳过"
   else
     make_wrapper "$c"
@@ -361,10 +355,11 @@ else:
     s = s.replace('unset LLVM_LIBPATH', 'export LLVM_LIBPATH=%s' % lib)
     s = s.replace('export CXXFLAGS="-std=c++11 -stdlib=libstdc++"',
                   'export CXXFLAGS="-std=c++11 -stdlib=libc++ -isystem %s --sysroot=%s"  # [hutb-ci] osm2odr' % (inc, sdk))
+    # 24.04 的 glibc 用 .relr.dyn，引擎自带旧 ld 读不了；osm2odr 的 cmake 自检链接也要用 lld
     s = s.replace('export LDFLAGS="-stdlib=libstdc++"',
-                  'export LDFLAGS="-stdlib=libc++ -L%s --sysroot=%s"' % (lib, sdk))
+                  'export LDFLAGS="-stdlib=libc++ -fuse-ld=lld -L%s --sysroot=%s"' % (lib, sdk))
     s = s.replace('-DCMAKE_CXX_FLAGS="-fPIC -std=c++14 -stdlib=libc++"',
-                  '-DCMAKE_CXX_FLAGS="-fPIC -std=c++14 -stdlib=libc++ -isystem %s --sysroot=%s"' % (inc, sdk))
+                  '-DCMAKE_CXX_FLAGS="-fPIC -std=c++14 -stdlib=libc++ -fuse-ld=lld -isystem %s --sysroot=%s"' % (inc, sdk))
     io.open(p, 'w', encoding='utf-8').write(s)
     print('osm2odr 补丁已写入')
 PY
