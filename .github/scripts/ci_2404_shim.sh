@@ -53,7 +53,29 @@ else:
         print('rpclib 去重补丁已写入')
     else:
         print('警告：AirSim.Build.cs 锚点未命中')
+
+# Ubuntu 24.04：AirSim 在 Linux 分支强制 -lstdc++ -lsupc++，会把系统 libstdc++ 的
+# __cxa_throw/__cxa_rethrow 抢先绑定到 exe，而引擎其余代码用自带 libc++abi →
+# 两套异常运行时混用，Cesium 抛异常时 rethrow_exception 拿到空指针 → std::terminate
+# （表现为加载 baidutest2test 地图段错误）。去掉这两项后 __cxa_* 由 libc++abi.a 静态解析。
+if 'hutb-ci 24.04] AirSim libc++' in s:
+    print('AirSim stdc++ 补丁已存在，跳过')
+else:
+    old2 = ('\t\t\t// needed when packaging\n'
+            '\t\t\tPublicAdditionalLibraries.Add("stdc++");\n'
+            '\t\t\tPublicAdditionalLibraries.Add("supc++");\n')
+    new2 = ('\t\t\t// [hutb-ci 24.04] AirSim libc++：不再链接系统 libstdc++/libsupc++，\n'
+            '\t\t\t// 统一使用引擎自带 libc++abi，避免异常运行时混用导致 std::terminate\n')
+    if old2 in s:
+        s = s.replace(old2, new2, 1)
+        io.open(p, 'w', encoding='utf-8').write(s)
+        print('AirSim stdc++/supc++ 补丁已写入')
+    else:
+        print('警告：AirSim stdc++/supc++ 锚点未命中')
 PY
+
+  # UBT 会把链接命令缓存进 Makefile.bin，删掉它才能按新 Build.cs 重新生成链接动作
+  find Unreal/CarlaUE4/Intermediate/Build/Linux -name 'Makefile.bin' -delete 2>/dev/null || true
 }
 
 if [ "${1:-}" = "--after-setup" ]; then
