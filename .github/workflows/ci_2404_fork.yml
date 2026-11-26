@@ -9,8 +9,8 @@ on:
     inputs:
       mode:
         type: choice
-        options: [fast, full]
-        default: full
+        options: [auto, fast, full]
+        default: auto
 
 jobs:
   build-2404:
@@ -19,7 +19,6 @@ jobs:
     runs-on: [self-hosted, linux, yxkj-hutb]
     env:
       UE4_ROOT: /home/yxkj/UnrealEngine_4.26
-      MODE: ${{ inputs.mode || 'full' }}
       UPLOAD: "false"
       PY_VER: "3.10"
       LDSHARED: "/home/yxkj/UnrealEngine_4.26/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/v17_clang-10.0.1-centos7/x86_64-unknown-linux-gnu/bin/clang++ -shared -fuse-ld=lld"
@@ -34,6 +33,27 @@ jobs:
 
       - name: 24.04 工具链适配
         run: bash .github/scripts/ci_2404_shim.sh
+        shell: bash
+
+      # mode 自动判断：手动 dispatch 指定时优先；否则要求「依赖产物 + 打包产物 +
+      # Content 缓存」三者齐全才判 fast，避免复用失败运行留下的半成品。
+      - name: 决定 mode
+        run: |
+          set -e
+          CI_CONTENT=/home/yxkj/ci-assets/Content
+          REQ="${{ inputs.mode }}"
+          if [ -n "$REQ" ] && [ "$REQ" != "auto" ]; then
+            MODE="$REQ"
+            echo "[mode] 手动指定：$MODE"
+          elif [ -d Build/dependencies ] && [ -d Build/UE4Carla ] && [ -d "$CI_CONTENT/.git" ]; then
+            MODE=fast
+            echo "[mode] 已有 Build/dependencies + Build/UE4Carla 且 Content 缓存在 -> fast"
+          else
+            MODE=full
+            echo "[mode] 缺少成功产物（需 Build/dependencies + Build/UE4Carla + Content 缓存）-> full"
+          fi
+          ls -d Build/dependencies Build/UE4Carla 2>/dev/null || true
+          echo "MODE=$MODE" >> "$GITHUB_ENV"
         shell: bash
 
       - name: 依赖与资源（full 时清空重建）
